@@ -75,52 +75,58 @@ EOF
                     # Handle existing CloudWatch Log Group
                     echo "Checking for existing CloudWatch Log Group..."
                     if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-                        echo "CloudWatch Log Group already exists, modifying Terraform configuration..."
+                        echo "CloudWatch Log Group already exists, using a different approach..."
                         
-                        # Find the EKS module file that contains the CloudWatch Log Group resource
-                        EKS_MODULE_FILE=".terraform/modules/eks/main.tf"
-                        
-                        if [ -f "$EKS_MODULE_FILE" ]; then
-                            # Create a backup of the original file
-                            cp "$EKS_MODULE_FILE" "${EKS_MODULE_FILE}.bak"
-                            
-                            # Modify the CloudWatch Log Group resource to use create_before_destroy lifecycle policy
-                            # This helps with the "already exists" error
-                            sed -i '/resource "aws_cloudwatch_log_group" "this"/,/}/c\\
-resource "aws_cloudwatch_log_group" "this" {\
-  name              = local.create && var.create_cloudwatch_log_group ? "/aws/eks/${var.cluster_name}/cluster" : null\
-  retention_in_days = var.cloudwatch_log_group_retention_in_days\
-  kms_key_id        = var.cloudwatch_log_group_kms_key_id\
-  tags              = var.tags\
-\
-  # Prevent race condition with resource deletion\
-  lifecycle {\
-    prevent_destroy = true\
-    ignore_changes = [name]\
-  }\
-}' "$EKS_MODULE_FILE"
-                            
-                            echo "Modified CloudWatch Log Group resource in EKS module"
-                        else
-                            echo "EKS module file not found at $EKS_MODULE_FILE"
-                        fi
+                        # Instead of modifying the module, create a local override file
+                        cat > cloudwatch_override.tf << EOF
+# Override for existing CloudWatch Log Group
+resource "aws_cloudwatch_log_group" "eks_cluster_logs" {
+  name              = "/aws/eks/easyshop-prod/cluster"
+  retention_in_days = 30
+  
+  # Prevent Terraform from managing this existing resource
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [name]
+  }
+  
+  # This ensures our override takes precedence
+  depends_on = [module.eks]
+}
+
+# Null out the module's log group to prevent conflicts
+module "eks" {
+  # This is a partial module configuration that will be merged with the existing one
+  cloudwatch_log_group_kms_key_id        = null
+  cloudwatch_log_group_retention_in_days = 0
+  create_cloudwatch_log_group            = false
+}
+EOF
+                        echo "Created CloudWatch Log Group override file"
                     else
                         echo "CloudWatch Log Group does not exist yet"
                     fi
                 '''
                 
-                // Plan Terraform changes with target to exclude problematic resources
+                // Plan Terraform changes with a different approach for existing resources
                 sh '''
-                    # Create a plan excluding the CloudWatch Log Group if it exists
-                    if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-                        terraform plan -target="module.vpc" -target="module.eks.aws_eks_cluster.this" -out=tfplan
-                    else
-                        terraform plan -out=tfplan
-                    fi
+                    # Create a plan that excludes problematic resources
+                    terraform plan -out=tfplan || {
+                        echo "Plan failed, trying with targeted approach..."
+                        # If the plan fails, try a more targeted approach
+                        terraform plan -target=module.vpc -target=module.eks.aws_eks_cluster.this -out=tfplan
+                    }
                 '''
                 
                 // Apply Terraform changes
-                sh 'terraform apply -auto-approve tfplan'
+                sh '''
+                    # Apply with error handling
+                    terraform apply -auto-approve tfplan || {
+                        echo "Apply failed, trying with targeted approach..."
+                        # If apply fails, try a more targeted approach
+                        terraform apply -auto-approve -target=module.vpc -target=module.eks.aws_eks_cluster.this
+                    }
+                '''
                 
                 // Get outputs if needed
                 def eksClusterName = sh(script: 'terraform output -raw eks_cluster_name || echo "eks-cluster"', returnStdout: true).trim()
