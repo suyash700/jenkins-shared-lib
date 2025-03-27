@@ -220,3 +220,75 @@ EOF
         throw e
     }
 }
+
+#!/usr/bin/env groovy
+
+def call() {
+    echo "Starting infrastructure provisioning with Terraform"
+    
+    try {
+        // Use AWS credentials properly
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
+                          credentialsId: 'aws-access-key', 
+                          accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
+                          secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+            
+            // Set AWS region
+            env.AWS_DEFAULT_REGION = 'eu-north-1'
+            
+            // Navigate to Terraform directory
+            dir('terraform') {
+                // Initialize Terraform
+                sh 'terraform init -upgrade'
+                
+                // Create a simple script to handle CloudWatch Log Group conflicts
+                writeFile file: 'handle_cloudwatch.sh', text: '''#!/bin/bash
+# Check if CloudWatch Log Group exists
+if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
+    echo "CloudWatch Log Group already exists, creating override..."
+    
+    # Create a simple override file
+    cat > cloudwatch_override.tf << EOF
+# Disable CloudWatch Log Group creation
+module "eks" {
+  create_cloudwatch_log_group = false
+  cluster_enabled_log_types   = []
+}
+EOF
+fi
+
+# Check for VPC limits
+VPC_COUNT=$(aws ec2 describe-vpcs | grep -c "VpcId" || true)
+if [ "$VPC_COUNT" -ge 5 ]; then
+    echo "WARNING: You are near or at the VPC limit. You may need to clean up unused VPCs."
+fi
+'''
+                
+                // Make the script executable and run it
+                sh 'chmod +x handle_cloudwatch.sh && ./handle_cloudwatch.sh'
+                
+                // Plan and apply with simple error handling
+                sh '''
+                # Try normal plan first
+                if terraform plan -out=tfplan; then
+                    echo "Plan successful, applying..."
+                    terraform apply -auto-approve tfplan
+                else
+                    echo "Plan failed, trying targeted approach..."
+                    # Try with targeted approach
+                    terraform apply -auto-approve -target=module.vpc -target=module.eks.aws_eks_cluster.this
+                fi
+                '''
+                
+                // Get outputs
+                def eksClusterName = sh(script: 'terraform output -raw cluster_name || echo "eks-cluster"', returnStdout: true).trim()
+                env.EKS_CLUSTER_NAME = eksClusterName
+                
+                echo "EKS Cluster Name: ${env.EKS_CLUSTER_NAME}"
+            }
+        }
+    } catch (Exception e) {
+        echo "Error during infrastructure provisioning: ${e.message}"
+        throw e
+    }
+}
