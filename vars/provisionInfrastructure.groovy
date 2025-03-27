@@ -15,6 +15,21 @@ def call() {
             
             // Navigate to Terraform directory
             dir('terraform') {
+                // Check if infrastructure already exists
+                sh '''
+                    # Check if EKS cluster already exists
+                    echo "Checking for existing EKS cluster..."
+                    CLUSTER_EXISTS=$(aws eks list-clusters | grep -c "easyshop-prod" || true)
+                    
+                    if [ "$CLUSTER_EXISTS" -gt 0 ]; then
+                        echo "EKS cluster already exists. Will update existing infrastructure."
+                        export TF_VAR_update_mode=true
+                    else
+                        echo "No existing EKS cluster found. Will create new infrastructure."
+                        export TF_VAR_update_mode=false
+                    fi
+                '''
+                
                 // Initialize Terraform with specific provider versions and patch VPC module
                 sh '''
                     # Create a versions.tf file to lock provider versions
@@ -72,56 +87,87 @@ EOF
                         echo "Warning: main.tf not found, could not update Kubernetes version"
                     fi
                     
-                    # Handle existing CloudWatch Log Group
+                    # Create a custom module override for CloudWatch Log Group
+                    echo "Creating CloudWatch Log Group override..."
+                    cat > cloudwatch_override.tf << EOF
+# Override the CloudWatch Log Group resource to prevent creation conflicts
+resource "aws_cloudwatch_log_group" "eks_cluster_logs" {
+  # This is a dummy resource that will be imported if it exists
+  count = 0
+}
+
+# Add a local variable to the EKS module to disable CloudWatch Log Group creation
+locals {
+  create_cloudwatch_log_group_override = false
+}
+
+# Modify the EKS module to use our override
+module "eks" {
+  # These are just for the override - the actual values come from main.tf
+  source = "terraform-aws-modules/eks/aws"
+  version = "~> 18.0"
+  
+  # This line is the key - it prevents creating a new log group
+  create_cloudwatch_log_group = local.create_cloudwatch_log_group_override
+}
+EOF
+                '''
+                
+                // Import existing resources to state if they exist
+                sh '''
+                    # Check for existing CloudWatch Log Group
                     echo "Checking for existing CloudWatch Log Group..."
                     if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-                        echo "CloudWatch Log Group already exists, creating variable override..."
+                        echo "CloudWatch Log Group already exists, removing from Terraform state..."
                         
-                        # Create a variable override file to disable CloudWatch Log Group creation
-                        cat > terraform.tfvars << EOF
-# Disable CloudWatch Log Group creation
-create_cloudwatch_log_group = false
-EOF
-                        echo "Created CloudWatch Log Group variable override in terraform.tfvars"
+                        # Remove the CloudWatch Log Group from Terraform state if it exists
+                        terraform state rm module.eks.aws_cloudwatch_log_group.this || true
+                        
+                        # Create a local file to track that we've handled this resource
+                        touch .cloudwatch_handled
                     else
                         echo "CloudWatch Log Group does not exist yet"
                     fi
-                '''
-                
-                // First try to destroy just the CloudWatch Log Group if it exists
-                sh '''
-                    if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-                        echo "Removing CloudWatch Log Group from Terraform state..."
-                        terraform state rm module.eks.aws_cloudwatch_log_group.this || true
-                        
-                        # Re-initialize Terraform to ensure modules are properly loaded
-                        echo "Re-initializing Terraform..."
-                        terraform init -upgrade
-                    fi
+                    
+                    # Re-initialize Terraform to ensure modules are properly loaded
+                    echo "Re-initializing Terraform..."
+                    terraform init -upgrade
                 '''
                 
                 // Plan Terraform changes with a different approach for existing resources
                 sh '''
-                    # Create a plan excluding the CloudWatch Log Group
-                    terraform plan -out=tfplan || {
-                        echo "Plan failed, trying with targeted approach..."
-                        # If the plan fails, try a more targeted approach
-                        terraform plan -target=module.vpc -target=module.eks.aws_eks_cluster.this -out=tfplan
-                    }
+                    # Create a plan with proper targeting to avoid CloudWatch conflicts
+                    if [ -f ".cloudwatch_handled" ]; then
+                        echo "Planning with CloudWatch Log Group excluded..."
+                        terraform plan -out=tfplan || {
+                            echo "Plan failed, trying with targeted approach..."
+                            # If the plan fails, try a more targeted approach
+                            terraform plan -target=module.vpc -target=module.eks.aws_eks_cluster.this -out=tfplan
+                        }
+                    else
+                        echo "Planning normal infrastructure deployment..."
+                        terraform plan -out=tfplan
+                    fi
                 '''
                 
                 // Apply Terraform changes
                 sh '''
                     # Apply with error handling
-                    terraform apply -auto-approve tfplan || {
-                        echo "Apply failed, trying with targeted approach..."
-                        # If apply fails, try a more targeted approach
-                        terraform apply -auto-approve -target=module.vpc -target=module.eks.aws_eks_cluster.this
-                    }
+                    if [ -f "tfplan" ]; then
+                        echo "Applying Terraform plan..."
+                        terraform apply -auto-approve tfplan || {
+                            echo "Apply failed, trying with targeted approach..."
+                            # If apply fails, try a more targeted approach
+                            terraform apply -auto-approve -target=module.vpc -target=module.eks.aws_eks_cluster.this
+                        }
+                    else
+                        echo "No plan file found, cannot apply changes"
+                        exit 1
+                    fi
                 '''
                 
                 // Get outputs if needed
-                def eksClusterName = sh(script: 'terraform output -raw eks_cluster_name || echo "eks-cluster"', returnStdout: true).trim()
+                def eksClusterName = sh(script: 'terraform output -raw cluster_name || echo "eks-cluster"', returnStdout: true).trim()
                 env.EKS_CLUSTER_NAME = eksClusterName
                 
                 echo "EKS Cluster Name: ${env.EKS_CLUSTER_NAME}"
