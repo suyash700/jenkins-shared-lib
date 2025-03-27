@@ -57,6 +57,20 @@ EOF
                     
                     # Run the patch script
                     ./patch_vpc_module.sh
+                    
+                    # Update Kubernetes version in the EKS module
+                    if [ -f "main.tf" ]; then
+                        echo "Updating Kubernetes version in EKS configuration..."
+                        # Replace Kubernetes version 1.24 with 1.28
+                        sed -i 's/version = "1.24"/version = "1.28"/g' main.tf
+                        # If version is specified in a variable file, update that too
+                        if [ -f "variables.tf" ]; then
+                            sed -i 's/default     = "1.24"/default     = "1.28"/g' variables.tf
+                        fi
+                        echo "Kubernetes version updated to 1.28"
+                    else
+                        echo "Warning: main.tf not found, could not update Kubernetes version"
+                    fi
                 '''
                 
                 // Plan Terraform changes
