@@ -78,18 +78,11 @@ EOF
                         echo "CloudWatch Log Group already exists, creating variable override..."
                         
                         # Create a variable override file to disable CloudWatch Log Group creation
-                        cat > cloudwatch_override.tf << EOF
-# Disable CloudWatch Log Group creation in the EKS module
-module "eks" {
-  # Use proper relative path format with ./ prefix
-  source = "./.terraform/modules/eks"
-  
-  # Keep all existing variables from the main configuration
-  # but override the CloudWatch Log Group settings
-  create_cloudwatch_log_group = false
-}
+                        cat > terraform.tfvars << EOF
+# Disable CloudWatch Log Group creation
+create_cloudwatch_log_group = false
 EOF
-                        echo "Created CloudWatch Log Group variable override"
+                        echo "Created CloudWatch Log Group variable override in terraform.tfvars"
                     else
                         echo "CloudWatch Log Group does not exist yet"
                     fi
@@ -100,6 +93,10 @@ EOF
                     if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
                         echo "Removing CloudWatch Log Group from Terraform state..."
                         terraform state rm module.eks.aws_cloudwatch_log_group.this || true
+                        
+                        # Re-initialize Terraform to ensure modules are properly loaded
+                        echo "Re-initializing Terraform..."
+                        terraform init -upgrade
                     fi
                 '''
                 
