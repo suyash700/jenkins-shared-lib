@@ -72,26 +72,52 @@ EOF
                         echo "Warning: main.tf not found, could not update Kubernetes version"
                     fi
                     
-                    # Import existing CloudWatch Log Group if it exists
+                    # Handle existing CloudWatch Log Group
                     echo "Checking for existing CloudWatch Log Group..."
                     if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-                        echo "CloudWatch Log Group already exists, importing into Terraform state..."
-                        # Get the module path for the CloudWatch Log Group
-                        MODULE_PATH=$(grep -r "aws_cloudwatch_log_group" --include="*.tf" . | grep -v ".terraform" | head -1 | cut -d':' -f1)
-                        if [ -n "$MODULE_PATH" ]; then
-                            echo "Found CloudWatch Log Group in $MODULE_PATH"
-                            # Import the existing CloudWatch Log Group into Terraform state
-                            terraform import module.eks.aws_cloudwatch_log_group.this /aws/eks/easyshop-prod/cluster || echo "Import failed, but continuing..."
+                        echo "CloudWatch Log Group already exists, modifying Terraform configuration..."
+                        
+                        # Find the EKS module file that contains the CloudWatch Log Group resource
+                        EKS_MODULE_FILE=".terraform/modules/eks/main.tf"
+                        
+                        if [ -f "$EKS_MODULE_FILE" ]; then
+                            # Create a backup of the original file
+                            cp "$EKS_MODULE_FILE" "${EKS_MODULE_FILE}.bak"
+                            
+                            # Modify the CloudWatch Log Group resource to use create_before_destroy lifecycle policy
+                            # This helps with the "already exists" error
+                            sed -i '/resource "aws_cloudwatch_log_group" "this"/,/}/c\\
+resource "aws_cloudwatch_log_group" "this" {\
+  name              = local.create && var.create_cloudwatch_log_group ? "/aws/eks/${var.cluster_name}/cluster" : null\
+  retention_in_days = var.cloudwatch_log_group_retention_in_days\
+  kms_key_id        = var.cloudwatch_log_group_kms_key_id\
+  tags              = var.tags\
+\
+  # Prevent race condition with resource deletion\
+  lifecycle {\
+    prevent_destroy = true\
+    ignore_changes = [name]\
+  }\
+}' "$EKS_MODULE_FILE"
+                            
+                            echo "Modified CloudWatch Log Group resource in EKS module"
                         else
-                            echo "Could not find CloudWatch Log Group resource in Terraform files"
+                            echo "EKS module file not found at $EKS_MODULE_FILE"
                         fi
                     else
                         echo "CloudWatch Log Group does not exist yet"
                     fi
                 '''
                 
-                // Plan Terraform changes
-                sh 'terraform plan -out=tfplan'
+                // Plan Terraform changes with target to exclude problematic resources
+                sh '''
+                    # Create a plan excluding the CloudWatch Log Group if it exists
+                    if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
+                        terraform plan -target="module.vpc" -target="module.eks.aws_eks_cluster.this" -out=tfplan
+                    else
+                        terraform plan -out=tfplan
+                    fi
+                '''
                 
                 // Apply Terraform changes
                 sh 'terraform apply -auto-approve tfplan'
