@@ -60,7 +60,7 @@ module "eks" {
 EOF
 
     # Create the variable definition if it doesn't exist
-    if ! grep -q "variable \"cluster_enabled_log_types\"" variables.tf; then
+    if ! grep -q "variable \\"cluster_enabled_log_types\\"" variables.tf; then
         cat >> variables.tf << EOF
 
 variable "cluster_enabled_log_types" {
