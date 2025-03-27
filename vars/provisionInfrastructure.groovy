@@ -94,7 +94,7 @@ EOF
                     fi
                 '''
                 
-                # First try to destroy just the CloudWatch Log Group if it exists
+                // First try to destroy just the CloudWatch Log Group if it exists
                 sh '''
                     if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
                         echo "Removing CloudWatch Log Group from Terraform state..."
