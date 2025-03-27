@@ -90,26 +90,14 @@ EOF
                     # Create a custom module override for CloudWatch Log Group
                     echo "Creating CloudWatch Log Group override..."
                     cat > cloudwatch_override.tf << EOF
-# Override the CloudWatch Log Group resource to prevent creation conflicts
-resource "aws_cloudwatch_log_group" "eks_cluster_logs" {
-  # This is a dummy resource that will be imported if it exists
-  count = 0
-}
+# Disable CloudWatch Log Group creation in the EKS module
+# Instead of trying to override, we'll use a variable file approach
+EOF
 
-# Add a local variable to the EKS module to disable CloudWatch Log Group creation
-locals {
-  create_cloudwatch_log_group_override = false
-}
-
-# Modify the EKS module to use our override
-module "eks" {
-  # These are just for the override - the actual values come from main.tf
-  source = "terraform-aws-modules/eks/aws"
-  version = "~> 18.0"
-  
-  # This line is the key - it prevents creating a new log group
-  create_cloudwatch_log_group = local.create_cloudwatch_log_group_override
-}
+                    # Create a variable file to disable CloudWatch Log Group creation
+                    cat > terraform.tfvars << EOF
+# Disable CloudWatch Log Group creation
+cluster_enabled_log_types = []
 EOF
                 '''
                 
@@ -121,7 +109,7 @@ EOF
                         echo "CloudWatch Log Group already exists, removing from Terraform state..."
                         
                         # Remove the CloudWatch Log Group from Terraform state if it exists
-                        terraform state rm module.eks.aws_cloudwatch_log_group.this || true
+                        terraform state list | grep aws_cloudwatch_log_group | xargs -r terraform state rm || true
                         
                         # Create a local file to track that we've handled this resource
                         touch .cloudwatch_handled
