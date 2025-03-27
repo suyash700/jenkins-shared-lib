@@ -71,6 +71,23 @@ EOF
                     else
                         echo "Warning: main.tf not found, could not update Kubernetes version"
                     fi
+                    
+                    # Import existing CloudWatch Log Group if it exists
+                    echo "Checking for existing CloudWatch Log Group..."
+                    if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
+                        echo "CloudWatch Log Group already exists, importing into Terraform state..."
+                        # Get the module path for the CloudWatch Log Group
+                        MODULE_PATH=$(grep -r "aws_cloudwatch_log_group" --include="*.tf" . | grep -v ".terraform" | head -1 | cut -d':' -f1)
+                        if [ -n "$MODULE_PATH" ]; then
+                            echo "Found CloudWatch Log Group in $MODULE_PATH"
+                            # Import the existing CloudWatch Log Group into Terraform state
+                            terraform import module.eks.aws_cloudwatch_log_group.this /aws/eks/easyshop-prod/cluster || echo "Import failed, but continuing..."
+                        else
+                            echo "Could not find CloudWatch Log Group resource in Terraform files"
+                        fi
+                    else
+                        echo "CloudWatch Log Group does not exist yet"
+                    fi
                 '''
                 
                 // Plan Terraform changes
