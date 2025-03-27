@@ -3,17 +3,20 @@
 def call() {
     echo "Starting infrastructure provisioning with Terraform"
     
-    withCredentials([
-        string(credentialsId: 'aws-access-key', variable: 'AWS_ACCESS_KEY_ID'),
-        string(credentialsId: 'aws-secret-key', variable: 'AWS_SECRET_ACCESS_KEY')
-    ]) {
-        dir('terraform') {
-            try {
+    try {
+        // Use AWS credentials properly
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
+                          credentialsId: 'aws-credentials', 
+                          accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
+                          secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+            
+            // Set AWS region
+            env.AWS_DEFAULT_REGION = 'eu-north-1'
+            
+            // Navigate to Terraform directory
+            dir('terraform') {
                 // Initialize Terraform
                 sh 'terraform init'
-                
-                // Validate Terraform configuration
-                sh 'terraform validate'
                 
                 // Plan Terraform changes
                 sh 'terraform plan -out=tfplan'
@@ -21,21 +24,15 @@ def call() {
                 // Apply Terraform changes
                 sh 'terraform apply -auto-approve tfplan'
                 
-                // Extract outputs for later use
-                def clusterName = sh(script: 'terraform output -raw cluster_name', returnStdout: true).trim()
-                def clusterEndpoint = sh(script: 'terraform output -raw cluster_endpoint', returnStdout: true).trim()
+                // Get outputs if needed
+                def eksClusterName = sh(script: 'terraform output -raw eks_cluster_name', returnStdout: true).trim()
+                env.EKS_CLUSTER_NAME = eksClusterName
                 
-                // Store outputs as environment variables
-                env.EKS_CLUSTER_NAME = clusterName
-                env.EKS_CLUSTER_ENDPOINT = clusterEndpoint
-                
-                echo "Successfully provisioned EKS cluster: ${clusterName}"
-                echo "Cluster endpoint: ${clusterEndpoint}"
-                
-            } catch (Exception e) {
-                echo "Error during infrastructure provisioning: ${e.message}"
-                throw e
+                echo "EKS Cluster Name: ${env.EKS_CLUSTER_NAME}"
             }
         }
+    } catch (Exception e) {
+        echo "Error during infrastructure provisioning: ${e.message}"
+        throw e
     }
 }
