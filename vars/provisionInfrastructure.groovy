@@ -15,8 +15,24 @@ def call() {
             
             // Navigate to Terraform directory
             dir('terraform') {
-                // Initialize Terraform
-                sh 'terraform init'
+                // Initialize Terraform with specific provider versions
+                sh '''
+                    # Create a versions.tf file to lock provider versions
+                    cat > versions.tf << EOF
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.0"  # Use AWS provider v4.x which is compatible with the modules
+    }
+  }
+  required_version = ">= 1.0"
+}
+EOF
+                    
+                    # Initialize with upgrade to apply version constraints
+                    terraform init -upgrade
+                '''
                 
                 // Plan Terraform changes
                 sh 'terraform plan -out=tfplan'
