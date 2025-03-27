@@ -122,11 +122,11 @@ EOF
                         
                         # Patch the main.tf file to use our variables
                         if grep -q "cluster_enabled_log_types" main.tf; then
-                            sed -i 's/cluster_enabled_log_types = \[.*\]/cluster_enabled_log_types = var.cluster_enabled_log_types/g' main.tf
+                            sed -i 's/cluster_enabled_log_types = \[[^]]*\]/cluster_enabled_log_types = var.cluster_enabled_log_types/g' main.tf
                             
                             # Add create_cloudwatch_log_group parameter if it doesn't exist
                             if ! grep -q "create_cloudwatch_log_group" main.tf; then
-                                sed -i '/module "eks" {/a\\n  create_cloudwatch_log_group = var.create_cloudwatch_log_group' main.tf
+                                sed -i '/module "eks" {/a\  create_cloudwatch_log_group = var.create_cloudwatch_log_group' main.tf
                             fi
                         fi
                     else
