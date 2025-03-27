@@ -75,42 +75,36 @@ EOF
                     # Handle existing CloudWatch Log Group
                     echo "Checking for existing CloudWatch Log Group..."
                     if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-                        echo "CloudWatch Log Group already exists, using a different approach..."
+                        echo "CloudWatch Log Group already exists, creating variable override..."
                         
-                        # Instead of modifying the module, create a local override file
+                        # Create a variable override file to disable CloudWatch Log Group creation
                         cat > cloudwatch_override.tf << EOF
-# Override for existing CloudWatch Log Group
-resource "aws_cloudwatch_log_group" "eks_cluster_logs" {
-  name              = "/aws/eks/easyshop-prod/cluster"
-  retention_in_days = 30
-  
-  # Prevent Terraform from managing this existing resource
-  lifecycle {
-    prevent_destroy = true
-    ignore_changes  = [name]
-  }
-  
-  # This ensures our override takes precedence
-  depends_on = [module.eks]
-}
-
-# Null out the module's log group to prevent conflicts
+# Disable CloudWatch Log Group creation in the EKS module
 module "eks" {
-  # This is a partial module configuration that will be merged with the existing one
-  cloudwatch_log_group_kms_key_id        = null
-  cloudwatch_log_group_retention_in_days = 0
-  create_cloudwatch_log_group            = false
+  source = ".terraform/modules/eks"
+  
+  # Keep all existing variables from the main configuration
+  # but override the CloudWatch Log Group settings
+  create_cloudwatch_log_group = false
 }
 EOF
-                        echo "Created CloudWatch Log Group override file"
+                        echo "Created CloudWatch Log Group variable override"
                     else
                         echo "CloudWatch Log Group does not exist yet"
                     fi
                 '''
                 
+                # First try to destroy just the CloudWatch Log Group if it exists
+                sh '''
+                    if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
+                        echo "Removing CloudWatch Log Group from Terraform state..."
+                        terraform state rm module.eks.aws_cloudwatch_log_group.this || true
+                    fi
+                '''
+                
                 // Plan Terraform changes with a different approach for existing resources
                 sh '''
-                    # Create a plan that excludes problematic resources
+                    # Create a plan excluding the CloudWatch Log Group
                     terraform plan -out=tfplan || {
                         echo "Plan failed, trying with targeted approach..."
                         # If the plan fails, try a more targeted approach
