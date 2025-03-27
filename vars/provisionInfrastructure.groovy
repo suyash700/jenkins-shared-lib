@@ -15,7 +15,7 @@ def call() {
             
             // Navigate to Terraform directory
             dir('terraform') {
-                // Initialize Terraform with specific provider versions
+                // Initialize Terraform with specific provider versions and patch VPC module
                 sh '''
                     # Create a versions.tf file to lock provider versions
                     cat > versions.tf << EOF
@@ -32,6 +32,31 @@ EOF
                     
                     # Initialize with upgrade to apply version constraints
                     terraform init -upgrade
+                    
+                    # Create a patch script to fix VPC module compatibility issues
+                    cat > patch_vpc_module.sh << 'EOF'
+#!/bin/bash
+# Find the VPC module file
+VPC_MAIN_TF=".terraform/modules/vpc/main.tf"
+
+if [ -f "$VPC_MAIN_TF" ]; then
+    echo "Patching VPC module to remove deprecated arguments..."
+    # Remove enable_classiclink arguments
+    sed -i '/enable_classiclink/d' "$VPC_MAIN_TF"
+    # Remove enable_classiclink_dns_support arguments
+    sed -i '/enable_classiclink_dns_support/d' "$VPC_MAIN_TF"
+    echo "VPC module patched successfully"
+else
+    echo "VPC module file not found at $VPC_MAIN_TF"
+    exit 1
+fi
+EOF
+                    
+                    # Make the patch script executable
+                    chmod +x patch_vpc_module.sh
+                    
+                    # Run the patch script
+                    ./patch_vpc_module.sh
                 '''
                 
                 // Plan Terraform changes
@@ -41,7 +66,7 @@ EOF
                 sh 'terraform apply -auto-approve tfplan'
                 
                 // Get outputs if needed
-                def eksClusterName = sh(script: 'terraform output -raw eks_cluster_name', returnStdout: true).trim()
+                def eksClusterName = sh(script: 'terraform output -raw eks_cluster_name || echo "eks-cluster"', returnStdout: true).trim()
                 env.EKS_CLUSTER_NAME = eksClusterName
                 
                 echo "EKS Cluster Name: ${env.EKS_CLUSTER_NAME}"
