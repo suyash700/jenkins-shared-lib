@@ -81,7 +81,8 @@ EOF
                         cat > cloudwatch_override.tf << EOF
 # Disable CloudWatch Log Group creation in the EKS module
 module "eks" {
-  source = ".terraform/modules/eks"
+  # Use proper relative path format with ./ prefix
+  source = "./.terraform/modules/eks"
   
   # Keep all existing variables from the main configuration
   # but override the CloudWatch Log Group settings
