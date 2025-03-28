@@ -18,6 +18,15 @@ def call() {
                     sed -i 's/vpc = true/domain = "vpc"/' main.tf
                 '''
                 
+                // Modify the IAM role configuration to handle existing role
+                sh '''
+                    # Check if the role already exists and modify the configuration
+                    if aws iam get-role --role-name easyshop-eks-role &>/dev/null; then
+                        echo "Role already exists, updating configuration..."
+                        sed -i 's/create_role\\s*=\\s*true/create_role = false/' main.tf
+                    fi
+                '''
+                
                 // Initialize Terraform with clean state
                 sh '''
                     rm -rf .terraform
@@ -45,6 +54,7 @@ def call() {
                     echo "No changes required"
                 else
                     echo "Plan failed, attempting targeted approach..."
+                    # Skip the IAM role in the targeted approach
                     terraform plan \
                         -var="environment=prod" \
                         -var="aws_region=eu-north-1" \
