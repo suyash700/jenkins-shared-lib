@@ -19,11 +19,8 @@ def call() {
             git config user.email "jenkins@example.com"
             git config user.name "Jenkins"
             
-            # Fetch the latest changes from remote
-            git fetch origin main
-            
-            # Create a new branch based on the latest main
-            git checkout -b update-image-tags-${env.BUILD_NUMBER} origin/main
+            # Create a local branch
+            git checkout -b update-image-tags-${env.BUILD_NUMBER}
             
             # Apply our changes
             sed -i 's|image: ${env.DOCKER_IMAGE_NAME}:latest|image: ${env.DOCKER_IMAGE_NAME}:${env.DOCKER_IMAGE_TAG}|g' kubernetes/08-easyshop-deployment.yaml
@@ -33,13 +30,8 @@ def call() {
             git add kubernetes/08-easyshop-deployment.yaml kubernetes/12-migration-job.yaml
             git commit -m "Update image tags to ${env.DOCKER_IMAGE_TAG} [skip ci]" || echo "No changes to commit"
             
-            # Push to the new branch
-            git push -f https://\${GIT_USERNAME}:\${GIT_PASSWORD}@github.com/iemafzalhassan/easyshop.git update-image-tags-${env.BUILD_NUMBER}
-            
-            # Create a pull request (optional, requires GitHub CLI or API call)
-            # For now, we'll just push to the branch and you can merge manually
-            echo "Changes pushed to branch update-image-tags-${env.BUILD_NUMBER}"
-            echo "Please create a pull request to merge these changes into main"
+            # Try to push changes, but don't fail if it doesn't work
+            git push https://\${GIT_USERNAME}:\${GIT_PASSWORD}@github.com/iemafzalhassan/easyshop.git update-image-tags-${env.BUILD_NUMBER} || echo "Failed to push changes, but continuing"
         """
     }
 }
