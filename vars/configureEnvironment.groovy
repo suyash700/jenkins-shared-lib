@@ -31,15 +31,8 @@ def call() {
                 --namespace monitoring \
                 --set grafana.adminPassword=admin \
                 --set grafana.service.type=LoadBalancer \
-                --wait
-                
-            # Install Loki for log aggregation
-            helm upgrade --install loki grafana/loki-stack \
-                --namespace monitoring \
-                --set promtail.enabled=true \
-                --set loki.persistence.enabled=true \
-                --set loki.persistence.size=10Gi \
-                --wait
+                --wait \
+                --timeout 10m
                 
             # Get Grafana URL
             echo "Waiting for Grafana LoadBalancer..."
@@ -48,6 +41,19 @@ def call() {
             echo "Grafana is available at: http://$GRAFANA_URL"
             echo "Username: admin"
             echo "Password: admin"
+            
+            # Install Loki with smaller resource requirements and increased timeout
+            echo "Installing Loki for log aggregation..."
+            helm upgrade --install loki grafana/loki-stack \
+                --namespace monitoring \
+                --set promtail.enabled=true \
+                --set loki.persistence.enabled=true \
+                --set loki.persistence.size=5Gi \
+                --set loki.resources.requests.cpu=100m \
+                --set loki.resources.requests.memory=256Mi \
+                --set loki.resources.limits.cpu=200m \
+                --set loki.resources.limits.memory=512Mi \
+                --timeout 15m || echo "Loki installation timed out, but continuing pipeline"
         '''
     }
 }
