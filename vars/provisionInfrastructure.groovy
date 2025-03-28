@@ -14,28 +14,13 @@ def call() {
             dir('terraform') {
                 sh 'terraform init -upgrade'
                 
-                writeFile file: 'prepare_terraform.sh', text: '''#!/bin/bash
-set -e
-
-handle_cloudwatch_log_group() {
-    local log_group="/aws/eks/easyshop-prod/cluster"
-    
-    if aws logs describe-log-groups --log-group-name-prefix "$log_group" | grep -q "logGroupName"; then
-        echo "Found existing CloudWatch Log Group, deleting it..."
-        aws logs delete-log-group --log-group-name "$log_group"
-        echo "Waiting for deletion to complete..."
-        sleep 10
-        
-        echo "Removing from Terraform state..."
-        terraform state rm module.eks.aws_cloudwatch_log_group.this || true
-    fi
-    
-    cat > main.tf << EOF
+                // First, create the main configuration file
+                writeFile file: 'main.tf', text: '''
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 18.0"
 
-  cluster_name    = "easyshop-\${var.environment}"
+  cluster_name    = "easyshop-prod"
   cluster_version = "1.32"
 
   vpc_id     = module.vpc.vpc_id
@@ -61,29 +46,15 @@ module "eks" {
   }
 
   tags = {
-    Environment = var.environment
+    Environment = "prod"
     Project     = "EasyShop"
     Terraform   = "true"
   }
 }
-EOF
-}
-
-handle_eks_cluster() {
-    if aws eks list-clusters | grep -q "easyshop-prod"; then
-        echo "EKS cluster exists, preparing for update..."
-        export TF_VAR_update_mode=true
-    else
-        echo "No existing EKS cluster found, preparing for creation..."
-        export TF_VAR_update_mode=false
-    fi
-}
-
-echo "Preparing Terraform environment..."
-handle_cloudwatch_log_group
-handle_eks_cluster
-
-cat > versions.tf << EOF
+'''
+                
+                // Create versions.tf
+                writeFile file: 'versions.tf', text: '''
 terraform {
   required_providers {
     aws = {
@@ -93,18 +64,25 @@ terraform {
   }
   required_version = ">= 1.0"
 }
-EOF
 '''
-
-                sh 'chmod +x prepare_terraform.sh && ./prepare_terraform.sh'
+                
+                // Re-initialize Terraform with new configurations
                 sh 'terraform init -upgrade'
                 
+                // Plan and apply with error handling
                 sh '''#!/bin/bash
+                set -e
+                
+                # Remove any existing plan
+                rm -f tfplan || true
+                
+                # Create new plan
                 terraform plan -out=tfplan || {
                     echo "Initial plan failed, attempting targeted approach..."
                     terraform plan -target=module.eks -out=tfplan
                 }
                 
+                # Apply the plan
                 if [ -f "tfplan" ]; then
                     terraform apply -auto-approve tfplan || {
                         echo "Full apply failed, attempting targeted apply..."
