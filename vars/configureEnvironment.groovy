@@ -42,9 +42,18 @@ def call() {
             echo "Username: admin"
             echo "Password: admin"
             
-            # Install Loki with smaller resource requirements and increased timeout
+            # Uninstall Loki first if it exists
+            echo "Checking if Loki exists..."
+            if helm ls -n monitoring | grep loki; then
+                echo "Uninstalling existing Loki installation..."
+                helm uninstall loki -n monitoring
+                # Wait for resources to be deleted
+                sleep 30
+            fi
+            
+            # Install Loki with smaller resource requirements
             echo "Installing Loki for log aggregation..."
-            helm upgrade --install loki grafana/loki-stack \
+            helm install loki grafana/loki-stack \
                 --namespace monitoring \
                 --set promtail.enabled=true \
                 --set loki.persistence.enabled=true \
