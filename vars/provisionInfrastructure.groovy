@@ -24,14 +24,24 @@ set -e
 
 # Function to check and handle CloudWatch Log Group
 handle_cloudwatch_log_group() {
-    if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-        echo "CloudWatch Log Group exists, removing from state and creating override..."
+    local log_group="/aws/eks/easyshop-prod/cluster"
+    
+    if aws logs describe-log-groups --log-group-name-prefix "$log_group" | grep -q "logGroupName"; then
+        echo "CloudWatch Log Group exists, handling existing resource..."
         
         # Remove from state if exists
         terraform state rm module.eks.aws_cloudwatch_log_group.this || true
         
-        # Create override file with complete EKS configuration
-        cat > override.tf << EOF
+        # Import existing log group if needed
+        if ! terraform state list | grep -q "aws_cloudwatch_log_group.existing"; then
+            # Create resource for existing log group
+            cat > cloudwatch_override.tf << EOF
+resource "aws_cloudwatch_log_group" "existing" {
+  name              = "${log_group}"
+  retention_in_days = 30
+  skip_destroy      = true
+}
+
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = "~> 18.0"
@@ -42,8 +52,10 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
+  # Use existing CloudWatch Log Group
   create_cloudwatch_log_group = false
-  cluster_enabled_log_types   = []
+  cloudwatch_log_group_arn   = aws_cloudwatch_log_group.existing.arn
+  cluster_enabled_log_types  = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
   eks_managed_node_group_defaults = {
     disk_size      = 50
@@ -67,9 +79,13 @@ module "eks" {
   }
 }
 EOF
+            
+            # Import the existing log group
+            terraform import aws_cloudwatch_log_group.existing "${log_group}" || true
+        fi
         
         # Force state refresh
-        terraform refresh -var-file=terraform.tfvars || true
+        terraform refresh
     fi
 }
 
@@ -111,17 +127,19 @@ EOF
 
                 // Plan and apply with improved error handling
                 sh '''
+                // Update the plan and apply commands
+                sh '''
                 # Create plan with complete configuration
-                terraform plan -out=tfplan || {
+                terraform plan -refresh=true -out=tfplan || {
                     echo "Initial plan failed, attempting targeted approach..."
-                    terraform plan -target=module.vpc -target=module.eks -out=tfplan
+                    terraform plan -refresh=true -target=aws_cloudwatch_log_group.existing -target=module.eks -out=tfplan
                 }
 
                 # Apply if plan exists
                 if [ -f "tfplan" ]; then
                     terraform apply -auto-approve tfplan || {
                         echo "Full apply failed, attempting targeted apply..."
-                        terraform apply -auto-approve -target=module.vpc -target=module.eks
+                        terraform apply -refresh=true -auto-approve -target=aws_cloudwatch_log_group.existing -target=module.eks
                     }
                 else
                     echo "No plan file found, cannot proceed"
