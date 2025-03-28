@@ -12,38 +12,61 @@ def call() {
             env.AWS_DEFAULT_REGION = 'eu-north-1'
             
             dir('terraform') {
-                // Initialize Terraform
-                sh 'terraform init -upgrade'
+                // Update VPC module version in main.tf
+                sh '''
+                    sed -i 's/version = "~> 3.0"/version = "~> 5.0"/' main.tf
+                    sed -i 's/vpc = true/domain = "vpc"/' main.tf
+                '''
                 
-                // Plan and apply with error handling
+                // Initialize Terraform with clean state
+                sh '''
+                    rm -rf .terraform
+                    rm -f .terraform.lock.hcl
+                    terraform init -upgrade
+                '''
+                
+                // Plan and apply with improved error handling
                 sh '''#!/bin/bash
                 set -e
                 
                 # Remove any existing plan
                 rm -f tfplan || true
                 
-                # Create new plan
-                terraform plan -var="environment=prod" -out=tfplan || {
-                    echo "Initial plan failed, attempting targeted approach..."
-                    terraform plan -var="environment=prod" -target=module.vpc -target=module.eks -out=tfplan
-                }
+                # Create new plan with detailed output
+                terraform plan \
+                    -var="environment=prod" \
+                    -var="aws_region=eu-north-1" \
+                    -detailed-exitcode -out=tfplan || code=$?
                 
-                # Apply the plan
-                if [ -f "tfplan" ]; then
-                    terraform apply -auto-approve tfplan || {
-                        echo "Full apply failed, attempting targeted apply..."
-                        terraform apply -auto-approve -var="environment=prod" -target=module.vpc -target=module.eks
-                    }
+                if [ "$code" -eq 2 ]; then
+                    echo "Changes detected, proceeding with apply..."
+                    terraform apply -auto-approve tfplan
+                elif [ "$code" -eq 0 ]; then
+                    echo "No changes required"
                 else
-                    echo "No plan file found, cannot proceed"
-                    exit 1
+                    echo "Plan failed, attempting targeted approach..."
+                    terraform plan \
+                        -var="environment=prod" \
+                        -var="aws_region=eu-north-1" \
+                        -target=module.vpc \
+                        -target=module.eks \
+                        -out=tfplan && \
+                    terraform apply -auto-approve tfplan
                 fi
                 '''
                 
-                // Get cluster name from outputs
-                def eksClusterName = sh(script: 'terraform output -raw cluster_name || echo "easyshop-cluster"', returnStdout: true).trim()
-                env.EKS_CLUSTER_NAME = eksClusterName
+                // Verify and export cluster info
+                sh '''
+                    terraform refresh
+                    terraform output -json > terraform_outputs.json
+                '''
                 
+                def eksClusterName = sh(
+                    script: 'jq -r .cluster_name.value terraform_outputs.json || echo "easyshop-cluster"',
+                    returnStdout: true
+                ).trim()
+                
+                env.EKS_CLUSTER_NAME = eksClusterName
                 echo "EKS Cluster Name: ${env.EKS_CLUSTER_NAME}"
             }
         }
