@@ -20,7 +20,36 @@ def call() {
                 
                 // Create a simple script to handle CloudWatch Log Group conflicts and other issues
                 writeFile file: 'prepare_terraform.sh', text: '''#!/bin/bash
-# Check if EKS cluster already exists
+# Check if CloudWatch Log Group exists first (before EKS cluster check)
+echo "Checking for existing CloudWatch Log Group..."
+if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
+    echo "CloudWatch Log Group already exists, creating override..."
+    
+    # Create a more comprehensive override file
+    cat > cloudwatch_override.tf << EOF
+# Override EKS module configuration
+module "eks" {
+  source = "terraform-aws-modules/eks/aws"
+  
+  create_cloudwatch_log_group = false
+  cluster_enabled_log_types   = []
+  
+  # Preserve other required configurations
+  cluster_name    = "easyshop-\${var.environment}"
+  cluster_version = "1.32"
+  vpc_id          = module.vpc.vpc_id
+  subnet_ids      = module.vpc.private_subnets
+}
+EOF
+
+    # Remove the CloudWatch Log Group from Terraform state if it exists
+    terraform state list | grep aws_cloudwatch_log_group | xargs -r terraform state rm || true
+    
+    # Force Terraform to refresh state
+    terraform refresh
+fi
+
+# Rest of the existing EKS cluster check
 echo "Checking for existing EKS cluster..."
 CLUSTER_EXISTS=$(aws eks list-clusters | grep -c "easyshop-prod" || true)
     
@@ -137,16 +166,19 @@ fi
                 # Try normal plan first
                 if [ -f ".reuse_vpc" ]; then
                     echo "Planning with VPC reuse strategy..."
-                    terraform plan -target=module.eks -out=tfplan || terraform plan -target=module.eks.aws_eks_cluster.this -out=tfplan
+                    terraform plan -refresh=true -target=module.eks -out=tfplan || \
+                    terraform plan -refresh=true -target=module.eks.aws_eks_cluster.this -out=tfplan
                 else
                     # Normal planning
-                    terraform plan -out=tfplan || terraform plan -target=module.vpc -target=module.eks.aws_eks_cluster.this -out=tfplan
+                    terraform plan -refresh=true -out=tfplan || \
+                    terraform plan -refresh=true -target=module.vpc -target=module.eks.aws_eks_cluster.this -out=tfplan
                 fi
                 
                 # Apply with error handling
                 if [ -f "tfplan" ]; then
                     echo "Applying Terraform plan..."
-                    terraform apply -auto-approve tfplan || terraform apply -auto-approve -target=module.vpc -target=module.eks.aws_eks_cluster.this
+                    terraform apply -auto-approve tfplan || \
+                    terraform apply -refresh=true -auto-approve -target=module.vpc -target=module.eks.aws_eks_cluster.this
                 else
                     echo "No plan file found, cannot apply changes"
                     exit 1
