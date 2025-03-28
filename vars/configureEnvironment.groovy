@@ -1,27 +1,53 @@
 #!/usr/bin/env groovy
 
 def call() {
-    echo "Starting environment configuration with Ansible"
+    echo "Configuring environment for EasyShop application"
     
     withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
-                      credentialsId: 'aws-credentials', 
+                      credentialsId: 'aws-access-key', 
                       accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
                       secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
-        dir('ansible') {
-            try {
-                // Install required Ansible collections
-                sh 'ansible-galaxy collection install kubernetes.core'
-                sh 'ansible-galaxy collection install community.general'
+        
+        // Set AWS region
+        env.AWS_DEFAULT_REGION = 'eu-north-1'
+        
+        // Ensure we're connected to the right cluster
+        sh """
+            aws eks update-kubeconfig --name ${env.EKS_CLUSTER_NAME} --region eu-north-1
+        """
+        
+        // Deploy Prometheus and Grafana for monitoring
+        sh '''
+            # Add Helm repositories
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+            helm repo add grafana https://grafana.github.io/helm-charts
+            helm repo update
+            
+            # Create monitoring namespace
+            kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+            
+            # Install Prometheus Stack with Grafana
+            helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+                --namespace monitoring \
+                --set grafana.adminPassword=admin \
+                --set grafana.service.type=LoadBalancer \
+                --wait
                 
-                // Run Ansible playbook
-                sh 'ansible-playbook playbooks/main.yml'
+            # Install Loki for log aggregation
+            helm upgrade --install loki grafana/loki-stack \
+                --namespace monitoring \
+                --set promtail.enabled=true \
+                --set loki.persistence.enabled=true \
+                --set loki.persistence.size=10Gi \
+                --wait
                 
-                echo "Successfully configured EKS environment"
-                
-            } catch (Exception e) {
-                echo "Error during environment configuration: ${e.message}"
-                throw e
-            }
-        }
+            # Get Grafana URL
+            echo "Waiting for Grafana LoadBalancer..."
+            sleep 30
+            GRAFANA_URL=$(kubectl get svc -n monitoring prometheus-grafana -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            echo "Grafana is available at: http://$GRAFANA_URL"
+            echo "Username: admin"
+            echo "Password: admin"
+        '''
     }
 }
