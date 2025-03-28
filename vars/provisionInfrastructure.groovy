@@ -4,33 +4,6 @@ def call() {
     echo "Starting infrastructure provisioning with Terraform"
     
     try {
-        // Check if Terraform is installed, if not install it
-        sh '''
-            if ! command -v terraform &> /dev/null; then
-                echo "Terraform not found, installing..."
-                # Create a directory for Terraform
-                mkdir -p /tmp/terraform
-                cd /tmp/terraform
-                
-                # Download Terraform
-                wget https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
-                
-                # Unzip and move to a directory in PATH
-                unzip terraform_1.5.7_linux_amd64.zip
-                sudo mv terraform /usr/local/bin/
-                
-                # Verify installation
-                terraform --version
-                
-                # Clean up
-                cd -
-                rm -rf /tmp/terraform
-            else
-                echo "Terraform is already installed"
-                terraform --version
-            fi
-        '''
-        
         // Use AWS credentials properly
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
                           credentialsId: 'aws-access-key', 
