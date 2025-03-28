@@ -105,9 +105,7 @@ fi
 # Update Kubernetes version in the EKS module
 if [ -f "main.tf" ]; then
     echo "Updating Kubernetes version in EKS configuration..."
-    # Replace Kubernetes version 1.24 with 1.32
     sed -i 's/version = "1.24"/version = "1.32"/g' main.tf
-    # If version is specified in a variable file, update that too
     if [ -f "variables.tf" ]; then
         sed -i 's/default     = "1.24"/default     = "1.32"/g' variables.tf
     fi
@@ -120,9 +118,7 @@ fi
 VPC_MAIN_TF=".terraform/modules/vpc/main.tf"
 if [ -f "$VPC_MAIN_TF" ]; then
     echo "Patching VPC module to remove deprecated arguments..."
-    # Remove enable_classiclink arguments
     sed -i '/enable_classiclink/d' "$VPC_MAIN_TF"
-    # Remove enable_classiclink_dns_support arguments
     sed -i '/enable_classiclink_dns_support/d' "$VPC_MAIN_TF"
     echo "VPC module patched successfully"
 else
