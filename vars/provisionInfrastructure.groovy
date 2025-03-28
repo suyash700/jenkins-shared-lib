@@ -4,6 +4,33 @@ def call() {
     echo "Starting infrastructure provisioning with Terraform"
     
     try {
+        // Check if Terraform is installed, if not install it
+        sh '''
+            if ! command -v terraform &> /dev/null; then
+                echo "Terraform not found, installing..."
+                # Create a directory for Terraform
+                mkdir -p /tmp/terraform
+                cd /tmp/terraform
+                
+                # Download Terraform
+                wget https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+                
+                # Unzip and move to a directory in PATH
+                unzip terraform_1.5.7_linux_amd64.zip
+                sudo mv terraform /usr/local/bin/
+                
+                # Verify installation
+                terraform --version
+                
+                # Clean up
+                cd -
+                rm -rf /tmp/terraform
+            else
+                echo "Terraform is already installed"
+                terraform --version
+            fi
+        '''
+        
         // Use AWS credentials properly
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
                           credentialsId: 'aws-access-key', 
@@ -105,13 +132,13 @@ fi
 # Update Kubernetes version in the EKS module
 if [ -f "main.tf" ]; then
     echo "Updating Kubernetes version in EKS configuration..."
-    # Replace Kubernetes version 1.24 with 1.28
-    sed -i 's/version = "1.24"/version = "1.28"/g' main.tf
+    # Replace Kubernetes version 1.24 with 1.32
+    sed -i 's/version = "1.24"/version = "1.32"/g' main.tf
     # If version is specified in a variable file, update that too
     if [ -f "variables.tf" ]; then
-        sed -i 's/default     = "1.24"/default     = "1.28"/g' variables.tf
+        sed -i 's/default     = "1.24"/default     = "1.32"/g' variables.tf
     fi
-    echo "Kubernetes version updated to 1.28"
+    echo "Kubernetes version updated to 1.32"
 else
     echo "Warning: main.tf not found, could not update Kubernetes version"
 fi
