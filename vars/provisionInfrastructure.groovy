@@ -18,169 +18,113 @@ def call() {
                 // Initialize Terraform
                 sh 'terraform init -upgrade'
                 
-                // Create a simple script to handle CloudWatch Log Group conflicts and other issues
+                // Create a script to handle CloudWatch Log Group and EKS setup
                 writeFile file: 'prepare_terraform.sh', text: '''#!/bin/bash
-# Check if CloudWatch Log Group exists first (before EKS cluster check)
-echo "Checking for existing CloudWatch Log Group..."
-if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-    echo "CloudWatch Log Group already exists, creating override..."
-    
-    # Create a more comprehensive override file
-    cat > cloudwatch_override.tf << EOF
-# Override EKS module configuration
+set -e
+
+# Function to check and handle CloudWatch Log Group
+handle_cloudwatch_log_group() {
+    if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
+        echo "CloudWatch Log Group exists, removing from state and creating override..."
+        
+        # Remove from state if exists
+        terraform state rm module.eks.aws_cloudwatch_log_group.this || true
+        
+        # Create override file with complete EKS configuration
+        cat > override.tf << EOF
 module "eks" {
-  source = "terraform-aws-modules/eks/aws"
-  
-  create_cloudwatch_log_group = false
-  cluster_enabled_log_types   = []
-  
-  # Preserve other required configurations
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 18.0"
+
   cluster_name    = "easyshop-\${var.environment}"
   cluster_version = "1.32"
-  vpc_id          = module.vpc.vpc_id
-  subnet_ids      = module.vpc.private_subnets
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  create_cloudwatch_log_group = false
+  cluster_enabled_log_types   = []
+
+  eks_managed_node_group_defaults = {
+    disk_size      = 50
+    instance_types = ["t3.medium"]
+  }
+
+  eks_managed_node_groups = {
+    app_nodes = {
+      min_size     = 2
+      max_size     = 5
+      desired_size = 2
+      instance_types = ["t3.medium"]
+      capacity_type  = "ON_DEMAND"
+    }
+  }
+
+  tags = {
+    Environment = var.environment
+    Project     = "EasyShop"
+    Terraform   = "true"
+  }
 }
 EOF
+        
+        # Force state refresh
+        terraform refresh -var-file=terraform.tfvars || true
+    fi
+}
 
-    # Remove the CloudWatch Log Group from Terraform state if it exists
-    terraform state list | grep aws_cloudwatch_log_group | xargs -r terraform state rm || true
-    
-    # Force Terraform to refresh state
-    terraform refresh
-fi
+# Function to check EKS cluster existence
+handle_eks_cluster() {
+    if aws eks list-clusters | grep -q "easyshop-prod"; then
+        echo "EKS cluster exists, preparing for update..."
+        export TF_VAR_update_mode=true
+    else
+        echo "No existing EKS cluster found, preparing for creation..."
+        export TF_VAR_update_mode=false
+    fi
+}
 
-# Rest of the existing EKS cluster check
-echo "Checking for existing EKS cluster..."
-CLUSTER_EXISTS=$(aws eks list-clusters | grep -c "easyshop-prod" || true)
-    
-if [ "$CLUSTER_EXISTS" -gt 0 ]; then
-    echo "EKS cluster already exists. Will update existing infrastructure."
-    export TF_VAR_update_mode=true
-else
-    echo "No existing EKS cluster found. Will create new infrastructure."
-    export TF_VAR_update_mode=false
-fi
+# Main execution
+echo "Preparing Terraform environment..."
+handle_cloudwatch_log_group
+handle_eks_cluster
 
-# Create a versions.tf file to lock provider versions
+# Update provider versions
 cat > versions.tf << EOF
 terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 4.0"  # Use AWS provider v4.x which is compatible with the modules
+      version = "~> 4.0"
     }
   }
   required_version = ">= 1.0"
 }
 EOF
-
-# Check if CloudWatch Log Group exists
-echo "Checking for existing CloudWatch Log Group..."
-if aws logs describe-log-groups --log-group-name-prefix "/aws/eks/easyshop-prod/cluster" | grep -q "logGroupName"; then
-    echo "CloudWatch Log Group already exists, creating override..."
-    
-    # Create a simple override file
-    cat > cloudwatch_override.tf << EOF
-# Disable CloudWatch Log Group creation
-module "eks" {
-  create_cloudwatch_log_group = false
-  cluster_enabled_log_types   = []
-}
-EOF
-
-    # Create the variable definition if it doesn't exist
-    if ! grep -q "variable \\"cluster_enabled_log_types\\"" variables.tf; then
-        cat >> variables.tf << EOF
-
-variable "cluster_enabled_log_types" {
-  description = "A list of the desired control plane logs to enable"
-  type        = list(string)
-  default     = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
-}
-
-variable "create_cloudwatch_log_group" {
-  description = "Determines whether a CloudWatch log group is created for each enabled log type"
-  type        = bool
-  default     = true
-}
-EOF
-    fi
-    
-    # Remove the CloudWatch Log Group from Terraform state if it exists
-    terraform state list | grep aws_cloudwatch_log_group | xargs -r terraform state rm || true
-fi
-
-# Check for VPC limit issues
-echo "Checking for VPC limit issues..."
-VPC_COUNT=$(aws ec2 describe-vpcs | grep -c "VpcId" || true)
-echo "Current VPC count: $VPC_COUNT"
-
-if [ "$VPC_COUNT" -ge 5 ]; then
-    echo "WARNING: You are near or at the VPC limit. Checking for unused VPCs to clean up..."
-    
-    # List VPCs that might be from previous runs
-    UNUSED_VPCS=$(aws ec2 describe-vpcs --filters "Name=tag:Project,Values=EasyShop" | jq -r '.Vpcs[].VpcId' || true)
-    
-    if [ ! -z "$UNUSED_VPCS" ]; then
-        echo "Found potentially unused EasyShop VPCs. Please clean them up manually:"
-        echo "$UNUSED_VPCS"
-        
-        # Create a flag file to indicate we need to import existing VPC
-        echo "Setting up to reuse existing VPC if possible..."
-        touch .reuse_vpc
-    fi
-fi
-
-# Update Kubernetes version in the EKS module
-if [ -f "main.tf" ]; then
-    echo "Updating Kubernetes version in EKS configuration..."
-    sed -i 's/version = "1.24"/version = "1.32"/g' main.tf
-    if [ -f "variables.tf" ]; then
-        sed -i 's/default     = "1.24"/default     = "1.32"/g' variables.tf
-    fi
-    echo "Kubernetes version updated to 1.32"
-else
-    echo "Warning: main.tf not found, could not update Kubernetes version"
-fi
-
-# Patch VPC module to fix compatibility issues
-VPC_MAIN_TF=".terraform/modules/vpc/main.tf"
-if [ -f "$VPC_MAIN_TF" ]; then
-    echo "Patching VPC module to remove deprecated arguments..."
-    sed -i '/enable_classiclink/d' "$VPC_MAIN_TF"
-    sed -i '/enable_classiclink_dns_support/d' "$VPC_MAIN_TF"
-    echo "VPC module patched successfully"
-else
-    echo "VPC module file not found at $VPC_MAIN_TF"
-fi
 '''
-                
-                // Make the script executable and run it
+
+                // Make script executable and run
                 sh 'chmod +x prepare_terraform.sh && ./prepare_terraform.sh'
-                
-                // Re-initialize Terraform to ensure modules are properly loaded
+
+                // Re-initialize with upgraded providers
                 sh 'terraform init -upgrade'
-                
-                // Plan and apply with simple error handling
+
+                // Plan and apply with improved error handling
                 sh '''
-                # Try normal plan first
-                if [ -f ".reuse_vpc" ]; then
-                    echo "Planning with VPC reuse strategy..."
-                    terraform plan -refresh=true -target=module.eks -out=tfplan || \
-                    terraform plan -refresh=true -target=module.eks.aws_eks_cluster.this -out=tfplan
-                else
-                    # Normal planning
-                    terraform plan -refresh=true -out=tfplan || \
-                    terraform plan -refresh=true -target=module.vpc -target=module.eks.aws_eks_cluster.this -out=tfplan
-                fi
-                
-                # Apply with error handling
+                # Create plan with complete configuration
+                terraform plan -out=tfplan || {
+                    echo "Initial plan failed, attempting targeted approach..."
+                    terraform plan -target=module.vpc -target=module.eks -out=tfplan
+                }
+
+                # Apply if plan exists
                 if [ -f "tfplan" ]; then
-                    echo "Applying Terraform plan..."
-                    terraform apply -auto-approve tfplan || \
-                    terraform apply -refresh=true -auto-approve -target=module.vpc -target=module.eks.aws_eks_cluster.this
+                    terraform apply -auto-approve tfplan || {
+                        echo "Full apply failed, attempting targeted apply..."
+                        terraform apply -auto-approve -target=module.vpc -target=module.eks
+                    }
                 else
-                    echo "No plan file found, cannot apply changes"
+                    echo "No plan file found, cannot proceed"
                     exit 1
                 fi
                 '''
