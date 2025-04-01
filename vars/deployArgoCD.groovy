@@ -3,10 +3,6 @@
 def call() {
     echo "Deploying ArgoCD"
     
-    // First, ensure Helm is installed
-    installHelm()
-    
-    // Configure kubectl to use the EKS cluster with proper AWS authentication
     withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
                       credentialsId: 'aws-access-key', 
                       accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
@@ -19,7 +15,6 @@ def call() {
         sh """
             aws eks update-kubeconfig --name ${env.EKS_CLUSTER_NAME} --region eu-north-1
             kubectl config current-context
-            kubectl cluster-info
         """
         
         // Deploy ArgoCD using Helm
@@ -28,28 +23,58 @@ def call() {
             helm repo add argo https://argoproj.github.io/argo-helm
             helm repo update
             
+            # Create ArgoCD namespace
+            kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+            
             # Install ArgoCD
             helm upgrade --install argocd argo/argo-cd \
                 --namespace argocd \
-                --create-namespace \
-                --version 5.46.7 \
-                --set server.service.type=LoadBalancer \
+                --set server.service.type=NodePort \
+                --set server.service.nodePortHttp=30080 \
+                --set server.service.nodePortHttps=30443 \
                 --wait
                 
             # Wait for ArgoCD to be ready
-            echo "Waiting for ArgoCD server to be ready..."
-            kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd || true
+            kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
+            
+            # Create Ingress for ArgoCD
+            cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-ingress
+  namespace: argocd
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - argocd.iemafzalhassan.tech
+    secretName: argocd-tls
+  rules:
+  - host: argocd.iemafzalhassan.tech
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: argocd-server
+            port:
+              number: 443
+EOF
+            
+            # Get ArgoCD initial admin password
+            ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
+            echo "ArgoCD Initial Admin Password: $ARGOCD_PASSWORD"
+            echo "ArgoCD URL: https://argocd.iemafzalhassan.tech"
+            echo "Username: admin"
             
             # Apply ArgoCD application
             kubectl apply -f kubernetes/argocd/application.yaml
-            
-            # Get ArgoCD server URL
-            echo "ArgoCD Server URL:"
-            kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
-            
-            # Get initial admin password
-            echo "ArgoCD Initial Admin Password:"
-            kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
         '''
     }
 }

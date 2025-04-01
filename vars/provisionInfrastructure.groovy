@@ -11,73 +11,58 @@ def call() {
             
             env.AWS_DEFAULT_REGION = 'eu-north-1'
             
+            // Setup Terraform backend first
+            sh 'chmod +x scripts/setup-terraform-backend.sh'
+            sh './scripts/setup-terraform-backend.sh'
+            
             dir('terraform') {
-                // Update VPC module version in main.tf
+                // Update VPC module version and fix deprecated parameters
                 sh '''
                     sed -i 's/version = "~> 3.0"/version = "~> 5.0"/' main.tf
                     sed -i 's/vpc = true/domain = "vpc"/' main.tf
                 '''
                 
-                // Modify the IAM role configuration to handle existing role
+                // Handle existing IAM role
                 sh '''
-                    # Check if the role already exists and modify the configuration
                     if aws iam get-role --role-name easyshop-eks-role &>/dev/null; then
                         echo "Role already exists, updating configuration..."
                         sed -i 's/create_role\\s*=\\s*true/create_role = false/' main.tf
                     fi
                 '''
                 
-                // Initialize Terraform with clean state
+                // Initialize Terraform
                 sh '''
-                    rm -rf .terraform
-                    rm -f .terraform.lock.hcl
                     terraform init -upgrade
                 '''
                 
                 // Plan and apply with improved error handling
-                sh '''#!/bin/bash
-                set -e
-                
-                # Remove any existing plan
-                rm -f tfplan || true
-                
-                # Create new plan with detailed output
-                terraform plan \
-                    -var="environment=prod" \
-                    -var="aws_region=eu-north-1" \
-                    -detailed-exitcode -out=tfplan || code=$?
-                
-                if [ "$code" -eq 2 ]; then
-                    echo "Changes detected, proceeding with apply..."
+                sh '''
+                    terraform plan -var="environment=prod" -var="aws_region=eu-north-1" -out=tfplan
                     terraform apply -auto-approve tfplan
-                elif [ "$code" -eq 0 ]; then
-                    echo "No changes required"
-                else
-                    echo "Plan failed, attempting targeted approach..."
-                    # Skip the IAM role in the targeted approach
-                    terraform plan \
-                        -var="environment=prod" \
-                        -var="aws_region=eu-north-1" \
-                        -target=module.vpc \
-                        -target=module.eks \
-                        -out=tfplan && \
-                    terraform apply -auto-approve tfplan
-                fi
                 '''
                 
-                // Verify and export cluster info
+                // Extract and store outputs
                 sh '''
-                    terraform refresh
                     terraform output -json > terraform_outputs.json
                 '''
                 
+                // Get EKS cluster name
                 def eksClusterName = sh(
-                    script: 'jq -r .cluster_name.value terraform_outputs.json || echo "easyshop-cluster"',
+                    script: 'jq -r .cluster_name.value terraform_outputs.json || echo "easyshop-prod"',
                     returnStdout: true
                 ).trim()
                 
                 env.EKS_CLUSTER_NAME = eksClusterName
                 echo "EKS Cluster Name: ${env.EKS_CLUSTER_NAME}"
+                
+                // Get NGINX Ingress Controller DNS
+                def ingressDns = sh(
+                    script: 'jq -r .nginx_ingress_hostname.value terraform_outputs.json || echo "not-available"',
+                    returnStdout: true
+                ).trim()
+                
+                env.INGRESS_DNS = ingressDns
+                echo "NGINX Ingress DNS: ${env.INGRESS_DNS}"
             }
         }
     } catch (Exception e) {
