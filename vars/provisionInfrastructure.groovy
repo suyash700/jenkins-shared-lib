@@ -35,10 +35,30 @@ def call() {
                     terraform init -upgrade
                 '''
                 
+                // Check if ArgoCD namespace exists and handle it
+                sh '''
+                    # Check if we can access the Kubernetes cluster
+                    if kubectl get namespaces &>/dev/null; then
+                        # Check if ArgoCD namespace exists
+                        if kubectl get namespace argocd &>/dev/null; then
+                            echo "ArgoCD namespace already exists, updating Terraform state..."
+                            # Import the namespace into Terraform state if it's not already there
+                            terraform import kubernetes_namespace.argocd argocd || true
+                        fi
+                    fi
+                '''
+                
                 // Plan and apply with improved error handling
                 sh '''
                     terraform plan -var="environment=prod" -var="aws_region=eu-north-1" -out=tfplan
-                    terraform apply -auto-approve tfplan
+                    # Apply with targeted approach to avoid namespace issues
+                    terraform apply -auto-approve tfplan || {
+                        echo "Initial apply failed, trying targeted approach..."
+                        # Skip the namespace creation and apply everything else
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=module.vpc -target=module.eks -target=module.iam_assumable_role_admin -target=kubernetes_namespace.cert_manager -target=kubernetes_namespace.ingress_nginx -target=helm_release.nginx_ingress -target=data.kubernetes_service.nginx_ingress
+                        # Then apply ArgoCD separately
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=helm_release.argocd
+                    }
                 '''
                 
                 // Extract and store outputs
