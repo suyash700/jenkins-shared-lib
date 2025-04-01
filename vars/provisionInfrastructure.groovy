@@ -35,6 +35,9 @@ def call() {
                     terraform init -upgrade
                 '''
                 
+                // Update the ArgoCD handling section in the provisionInfrastructure.groovy file
+                // Around line 38-58
+                
                 // Check if ArgoCD namespace exists and handle it
                 sh '''
                     # Check if we can access the Kubernetes cluster
@@ -44,6 +47,12 @@ def call() {
                             echo "ArgoCD namespace already exists, updating Terraform state..."
                             # Import the namespace into Terraform state if it's not already there
                             terraform import kubernetes_namespace.argocd argocd || true
+                        fi
+                        
+                        # Check if ArgoCD Helm release exists
+                        if helm list -n argocd | grep argocd &>/dev/null; then
+                            echo "ArgoCD Helm release already exists, removing from Terraform state"
+                            terraform state list | grep helm_release.argocd && terraform state rm helm_release.argocd || true
                         fi
                     fi
                 '''
@@ -56,8 +65,6 @@ def call() {
                         echo "Initial apply failed, trying targeted approach..."
                         # Skip the namespace creation and apply everything else
                         terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=module.vpc -target=module.eks -target=module.iam_assumable_role_admin -target=kubernetes_namespace.cert_manager -target=kubernetes_namespace.ingress_nginx -target=helm_release.nginx_ingress -target=data.kubernetes_service.nginx_ingress
-                        # Then apply ArgoCD separately
-                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=helm_release.argocd
                     }
                 '''
                 
