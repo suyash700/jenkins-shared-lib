@@ -54,6 +54,19 @@ def call() {
                             echo "ArgoCD Helm release already exists, removing from Terraform state"
                             terraform state list | grep helm_release.argocd && terraform state rm helm_release.argocd || true
                         fi
+                        
+                        # Check if ingress-nginx namespace exists
+                        if kubectl get namespace ingress-nginx &>/dev/null; then
+                            echo "ingress-nginx namespace already exists, updating Terraform state..."
+                            # Import the namespace into Terraform state if it's not already there
+                            terraform import kubernetes_namespace.ingress_nginx ingress-nginx || true
+                        fi
+                        
+                        # Check if NGINX Ingress Helm release exists
+                        if helm list -n ingress-nginx | grep ingress-nginx &>/dev/null; then
+                            echo "NGINX Ingress Helm release already exists, updating Terraform state"
+                            terraform state list | grep helm_release.nginx_ingress && terraform state rm helm_release.nginx_ingress || true
+                        fi
                     fi
                 '''
                 
@@ -64,7 +77,17 @@ def call() {
                     terraform apply -auto-approve tfplan || {
                         echo "Initial apply failed, trying targeted approach..."
                         # Skip the namespace creation and apply everything else
-                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=module.vpc -target=module.eks -target=module.iam_assumable_role_admin -target=kubernetes_namespace.cert_manager -target=kubernetes_namespace.ingress_nginx -target=helm_release.nginx_ingress -target=data.kubernetes_service.nginx_ingress
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=module.vpc -target=module.eks -target=module.iam_assumable_role_admin || true
+                        
+                        # Apply ingress-nginx separately
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=kubernetes_namespace.ingress_nginx -target=helm_release.nginx_ingress || true
+                        
+                        # Apply cert-manager separately
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=kubernetes_namespace.cert_manager || true
+                        
+                        # Wait for ingress controller to be ready
+                        echo "Waiting for ingress controller to be ready..."
+                        kubectl wait --for=condition=available --timeout=300s deployment/ingress-nginx-controller -n ingress-nginx || true
                     }
                 '''
                 

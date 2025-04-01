@@ -29,12 +29,27 @@ def call() {
             helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
                 --namespace monitoring \
                 --set grafana.adminPassword=admin \
-                --set grafana.service.type=NodePort \
-                --set grafana.service.nodePort=30300 \
-                --wait
+                --set grafana.service.type=LoadBalancer \
+                --wait \
+                --timeout 15m
             
-            # Create Ingress for Grafana
-            cat <<EOF | kubectl apply -f -
+            # Wait for Grafana to be ready
+            echo "Waiting for Grafana to be ready..."
+            kubectl wait --for=condition=available --timeout=300s deployment/prometheus-grafana -n monitoring || true
+            
+            # Wait for ingress controller to be fully ready
+            echo "Ensuring ingress controller is fully ready..."
+            kubectl wait --for=condition=available --timeout=300s deployment/ingress-nginx-controller -n ingress-nginx || true
+            
+            # Give the admission webhook some time to be fully operational
+            echo "Waiting for admission webhook to be ready..."
+            sleep 60
+            
+            # Create Ingress for Grafana with retry logic
+            echo "Creating Grafana ingress with retry logic..."
+            for i in {1..5}; do
+                echo "Attempt $i to create Grafana ingress..."
+                cat <<EOF | kubectl apply -f - && break || sleep 30
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -43,6 +58,7 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/timeout-seconds: "60"
 spec:
   ingressClassName: nginx
   tls:
@@ -61,9 +77,13 @@ spec:
             port:
               number: 80
 EOF
-
-            # Create Ingress for Prometheus
-            cat <<EOF | kubectl apply -f -
+            done
+            
+            # Create Ingress for Prometheus with retry logic
+            echo "Creating Prometheus ingress with retry logic..."
+            for i in {1..5}; do
+                echo "Attempt $i to create Prometheus ingress..."
+                cat <<EOF | kubectl apply -f - && break || sleep 30
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -72,6 +92,7 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/timeout-seconds: "60"
 spec:
   ingressClassName: nginx
   tls:
@@ -90,11 +111,17 @@ spec:
             port:
               number: 9090
 EOF
+            done
             
+            # Get Grafana LoadBalancer URL
             echo "Grafana URL: https://grafana.iemafzalhassan.tech"
             echo "Prometheus URL: https://prometheus.iemafzalhassan.tech"
             echo "Grafana Username: admin"
             echo "Grafana Password: admin"
+            
+            # Display the actual LoadBalancer URL as well
+            GRAFANA_LB=$(kubectl get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
+            echo "Grafana LoadBalancer URL: http://$GRAFANA_LB"
         '''
     }
 }

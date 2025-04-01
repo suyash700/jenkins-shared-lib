@@ -37,8 +37,19 @@ def call() {
             # Wait for ArgoCD to be ready
             kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
             
-            # Create Ingress for ArgoCD
-            cat <<EOF | kubectl apply -f -
+            # Wait for ingress controller to be fully ready
+            echo "Ensuring ingress controller is fully ready..."
+            kubectl wait --for=condition=available --timeout=300s deployment/ingress-nginx-controller -n ingress-nginx || true
+            
+            # Give the admission webhook some time to be fully operational
+            echo "Waiting for admission webhook to be ready..."
+            sleep 60
+            
+            # Create Ingress for ArgoCD with retry logic
+            echo "Creating ArgoCD ingress with retry logic..."
+            for i in {1..5}; do
+                echo "Attempt $i to create ArgoCD ingress..."
+                cat <<EOF | kubectl apply -f - && break || sleep 30
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -48,6 +59,7 @@ metadata:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
     nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+    nginx.ingress.kubernetes.io/timeout-seconds: "60"
 spec:
   ingressClassName: nginx
   tls:
@@ -66,6 +78,7 @@ spec:
             port:
               number: 443
 EOF
+            done
             
             # Get ArgoCD initial admin password
             ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
@@ -73,8 +86,17 @@ EOF
             echo "ArgoCD URL: https://argocd.iemafzalhassan.tech"
             echo "Username: admin"
             
-            # Apply ArgoCD application
-            kubectl apply -f kubernetes/argocd/application.yaml
+            # Get the NGINX Ingress Controller LoadBalancer URL
+            NGINX_LB=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
+            echo "NGINX Ingress LoadBalancer: $NGINX_LB"
+            
+            # Apply ArgoCD application if it exists
+            if [ -f "kubernetes/argocd/application.yaml" ]; then
+                echo "Applying ArgoCD application..."
+                kubectl apply -f kubernetes/argocd/application.yaml || echo "Failed to apply ArgoCD application, but continuing"
+            else
+                echo "No ArgoCD application manifest found, skipping"
+            fi
         '''
     }
 }
