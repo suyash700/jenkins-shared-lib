@@ -3,10 +3,16 @@ def call(Map config = [:]) {
     def region = config.region ?: 'eu-north-1'
     def terraformDir = config.terraformDir ?: 'terraform'
     def forceRecreate = config.forceRecreate ?: false
+    def skipOnMissingCredentials = config.skipOnMissingCredentials ?: false
     
     // Check if AWS credentials are available in the environment
     if (env.AWS_ACCESS_KEY_ID == null || env.AWS_SECRET_ACCESS_KEY == null) {
-        error "AWS credentials are required for infrastructure deployment. Please configure 'aws-credentials' in Jenkins or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables."
+        if (skipOnMissingCredentials) {
+            echo "AWS credentials not available. Skipping infrastructure deployment."
+            return
+        } else {
+            error "AWS credentials are required for infrastructure deployment. Please configure 'aws-access-key' in Jenkins or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables."
+        }
     }
     
     // Use environment variables directly instead of withCredentials
