@@ -63,19 +63,38 @@ def call() {
             echo "Waiting for Grafana to be ready..."
             kubectl wait --for=condition=available --timeout=300s deployment/prometheus-grafana -n monitoring || true
             
-            # Wait for ingress controller to be fully ready
-            echo "Ensuring ingress controller is fully ready..."
-            kubectl wait --for=condition=available --timeout=300s deployment/ingress-nginx-controller -n ingress-nginx || true
+            # Fix the NGINX Ingress Controller admission webhook timeout issue
+            echo "Fixing NGINX Ingress Controller admission webhook timeout..."
             
-            # Give the admission webhook some time to be fully operational
-            echo "Waiting for admission webhook to be ready..."
-            sleep 60
+            # Check if the ValidatingWebhookConfiguration exists
+            if kubectl get validatingwebhookconfigurations ingress-nginx-admission &>/dev/null; then
+                echo "Patching NGINX Ingress admission webhook timeout..."
+                
+                # Patch the webhook to increase the timeout
+                kubectl patch validatingwebhookconfigurations ingress-nginx-admission \
+                  --type='json' \
+                  -p='[{"op": "replace", "path": "/webhooks/0/timeoutSeconds", "value": 30}]' || true
+                
+                # Restart the ingress controller to apply changes
+                echo "Restarting NGINX Ingress Controller..."
+                kubectl rollout restart deployment ingress-nginx-controller -n ingress-nginx
+                
+                # Wait for the ingress controller to be ready again
+                echo "Waiting for NGINX Ingress Controller to be ready..."
+                kubectl rollout status deployment ingress-nginx-controller -n ingress-nginx --timeout=300s || true
+                
+                # Additional wait to ensure webhook is fully operational
+                echo "Additional wait for webhook to be fully operational..."
+                sleep 90
+            else
+                echo "NGINX Ingress admission webhook not found, skipping patch"
+            fi
             
-            # Create Ingress for Grafana with retry logic
-            echo "Creating Grafana ingress with retry logic..."
-            for i in {1..5}; do
+            # Create Ingress for Grafana with improved retry logic
+            echo "Creating Grafana ingress with improved retry logic..."
+            for i in {1..10}; do
                 echo "Attempt $i to create Grafana ingress..."
-                cat <<EOF | kubectl apply -f - && break || sleep 30
+                if cat <<EOF | kubectl apply -f - ; then
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -104,13 +123,36 @@ spec:
             port:
               number: 80
 EOF
+                    echo "Grafana ingress created successfully!"
+                    break
+                else
+                    echo "Failed to create Grafana ingress, retrying in 30 seconds..."
+                    sleep 30
+                    
+                    # If we're on the 5th attempt, try to fix the webhook again
+                    if [ "$i" = "5" ]; then
+                        echo "Still having issues, trying to fix webhook again..."
+                        
+                        # Try to restart the webhook
+                        kubectl delete pod -l app.kubernetes.io/component=controller -n ingress-nginx || true
+                        sleep 60
+                        
+                        # Try to patch the webhook again
+                        kubectl patch validatingwebhookconfigurations ingress-nginx-admission \
+                          --type='json' \
+                          -p='[{"op": "replace", "path": "/webhooks/0/timeoutSeconds", "value": 30}]' || true
+                        
+                        # Additional wait
+                        sleep 60
+                    fi
+                fi
             done
             
-            # Create Ingress for Prometheus with retry logic
-            echo "Creating Prometheus ingress with retry logic..."
-            for i in {1..5}; do
+            # Create Ingress for Prometheus with improved retry logic
+            echo "Creating Prometheus ingress with improved retry logic..."
+            for i in {1..10}; do
                 echo "Attempt $i to create Prometheus ingress..."
-                cat <<EOF | kubectl apply -f - && break || sleep 30
+                if cat <<EOF | kubectl apply -f - ; then
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -139,13 +181,19 @@ spec:
             port:
               number: 9090
 EOF
+                    echo "Prometheus ingress created successfully!"
+                    break
+                else
+                    echo "Failed to create Prometheus ingress, retrying in 30 seconds..."
+                    sleep 30
+                fi
             done
             
-            # Create Ingress for Alertmanager with retry logic
-            echo "Creating Alertmanager ingress with retry logic..."
-            for i in {1..5}; do
+            # Create Ingress for Alertmanager with improved retry logic
+            echo "Creating Alertmanager ingress with improved retry logic..."
+            for i in {1..10}; do
                 echo "Attempt $i to create Alertmanager ingress..."
-                cat <<EOF | kubectl apply -f - && break || sleep 30
+                if cat <<EOF | kubectl apply -f - ; then
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -174,6 +222,12 @@ spec:
             port:
               number: 9093
 EOF
+                    echo "Alertmanager ingress created successfully!"
+                    break
+                else
+                    echo "Failed to create Alertmanager ingress, retrying in 30 seconds..."
+                    sleep 30
+                fi
             done
             
             # Install Loki for log aggregation
@@ -188,7 +242,8 @@ EOF
                 sleep 30
             fi
             
-            # Install Loki with smaller resource requirements
+            # Install Loki with smaller resource requirements and increased timeout
+            echo "Installing Loki with increased timeout..."
             helm install loki grafana/loki-stack \
                 --namespace monitoring \
                 --set promtail.enabled=true \
@@ -198,7 +253,7 @@ EOF
                 --set loki.resources.requests.memory=256Mi \
                 --set loki.resources.limits.cpu=200m \
                 --set loki.resources.limits.memory=512Mi \
-                --timeout 15m || echo "Loki installation timed out, but continuing pipeline"
+                --timeout 30m || echo "Loki installation timed out, but continuing pipeline"
             
             # Configure Grafana dashboards for EasyShop application
             echo "Configuring Grafana dashboards..."
