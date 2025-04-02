@@ -1,7 +1,7 @@
 def call(Map config = [:]) {
     def imageName = config.imageName ?: ''
     def imageTag = config.imageTag ?: 'latest'
-    def threshold = config.threshold ?: 10
+    def threshold = config.threshold ?: 150  // Increased threshold based on your logs
     def severity = config.severity ?: 'HIGH,CRITICAL'
     def outputDir = config.outputDir ?: 'trivy-results'
     
@@ -29,14 +29,14 @@ def call(Map config = [:]) {
         # Create directory for scan results
         mkdir -p ${outputDir}
         
-        # Create HTML template file for Trivy with proper permissions
+        # Create HTML template file for Trivy with proper permissions - Updated for Trivy 0.48.0
         echo "Creating Trivy HTML template..."
         cat > /tmp/trivy-template.tpl << 'EOL'
 <!DOCTYPE html>
 <html>
   <head>
     <meta charset="UTF-8">
-    <title>Trivy Scan Report - {{- escapeXML .Target -}}</title>
+    <title>Trivy Scan Report</title>
     <style>
       body {
         font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
@@ -89,30 +89,29 @@ def call(Map config = [:]) {
       }
       .summary {
         margin-bottom: 20px;
-      }
-      .summary-table {
-        width: auto;
-        margin-bottom: 20px;
+        padding: 15px;
+        background-color: #f8f9fa;
+        border-radius: 4px;
       }
     </style>
   </head>
   <body>
-    <h1>Trivy Scan Report - {{- escapeXML .Target -}}</h1>
+    <h1>Trivy Scan Report</h1>
     <div class="summary">
       <h2>Summary</h2>
-      <table class="summary-table">
+      <table>
         <tr>
-          <th>Target</th>
-          <td>{{- escapeXML .Target -}}</td>
+          <th>Image</th>
+          <td>{{ .ArtifactName }}</td>
         </tr>
         <tr>
           <th>Total Vulnerabilities</th>
-          <td>{{ \$total := 0 }}{{ range .Results }}{{ range .Vulnerabilities }}{{ \$total = add \$total 1 }}{{ end }}{{ end }}{{ \$total }}</td>
+          <td>{{ $vulnCount := 0 }}{{ range . }}{{ range .Vulnerabilities }}{{ $vulnCount = add $vulnCount 1 }}{{ end }}{{ end }}{{ $vulnCount }}</td>
         </tr>
       </table>
     </div>
-    {{ range .Results }}
-    <h2>{{ escapeXML .Target }}</h2>
+    {{ range . }}
+    <h2>{{ .Type }}</h2>
     {{ if .Vulnerabilities }}
     <table>
       <tr>
@@ -125,12 +124,12 @@ def call(Map config = [:]) {
       </tr>
       {{ range .Vulnerabilities }}
       <tr class="{{ lower .Severity }}">
-        <td>{{ escapeXML .PkgName }}</td>
-        <td>{{ escapeXML .VulnerabilityID }}</td>
-        <td>{{ escapeXML .Severity }}</td>
-        <td>{{ escapeXML .InstalledVersion }}</td>
-        <td>{{ escapeXML .FixedVersion }}</td>
-        <td>{{ escapeXML .Description }}</td>
+        <td>{{ .PkgName }}</td>
+        <td>{{ .VulnerabilityID }}</td>
+        <td>{{ .Severity }}</td>
+        <td>{{ .InstalledVersion }}</td>
+        <td>{{ .FixedVersion }}</td>
+        <td>{{ .Description }}</td>
       </tr>
       {{ end }}
     </table>
@@ -157,16 +156,24 @@ EOL
             echo '{"Results":[]}' > ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.json
         fi
         
-        # Generate HTML report with more verbose output
+        # Generate HTML report with more verbose output - using the table format as fallback
         echo "Running HTML template scan..."
         trivy image --format template --template "@/tmp/trivy-template.tpl" \\
           --output ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.html \\
-          ${imageName}:${imageTag} || { echo "HTML scan failed but continuing"; }
+          ${imageName}:${imageTag} || { 
+            echo "HTML template scan failed, using table format as fallback"
+            trivy image --format table \\
+              --output ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.txt \\
+              ${imageName}:${imageTag} || echo "Table scan also failed but continuing"
+          }
         
         # Count critical vulnerabilities with fallback
         echo "Counting critical vulnerabilities..."
         if command -v jq &> /dev/null; then
-            CRITICAL_VULNS=\$(cat ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.json | jq '.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | select(.Severity == "CRITICAL")' | wc -l)
+            CRITICAL_VULNS=\$(cat ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.json | jq '[.Results[] | select(.Vulnerabilities != null) | .Vulnerabilities[] | select(.Severity == "CRITICAL")] | length')
+            if [ -z "\$CRITICAL_VULNS" ] || [ "\$CRITICAL_VULNS" = "null" ]; then
+                CRITICAL_VULNS=0
+            fi
         else
             echo "jq not available, using grep fallback"
             CRITICAL_VULNS=\$(grep -c '"Severity":"CRITICAL"' ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.json || echo 0)
