@@ -123,8 +123,8 @@ def call(Map config = [:]) {
         fi
     """
     
-    // Configure AWS if needed
-    if (configureAws) {
+    // Configure AWS if needed and if credentials are available
+    if (configureAws && env.AWS_ACCESS_KEY_ID != null && env.AWS_SECRET_ACCESS_KEY != null) {
         sh """
             mkdir -p ~/.aws
             
@@ -144,5 +144,7 @@ EOF
             chmod 600 ~/.aws/credentials
             chmod 600 ~/.aws/config
         """
+    } else if (configureAws) {
+        echo "AWS credentials not available. Skipping AWS configuration."
     }
 }
