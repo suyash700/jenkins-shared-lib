@@ -47,14 +47,14 @@ def call(Map config = [:]) {
         
         # kubectl
         if echo "${toolsStr}" | grep -q "kubectl"; then
-            echo "Cleaning up any existing kubectl installations..."
-            rm -rf "\$HOME/bin/kubectl"
-            which kubectl && rm -f "\$(which kubectl)" || true
+            echo "Cleaning up any existing kubectl installations in user directory..."
+            rm -rf "\$HOME/bin/kubectl" 2>/dev/null || true
             
             echo "Installing kubectl..."
             curl -LO "https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
             chmod +x kubectl
-            mv -f kubectl \$HOME/bin/
+            cp -f kubectl \$HOME/bin/ 2>/dev/null || true
+            rm -f kubectl
             
             # Verify installation
             echo "Verifying kubectl installation..."
@@ -81,17 +81,24 @@ def call(Map config = [:]) {
         if echo "${toolsStr}" | grep -q "terraform"; then
             TERRAFORM_VERSION="${versions.terraform}"
             
-            # More aggressive cleanup for terraform
-            echo "Cleaning up any existing terraform installations..."
-            rm -rf "\$HOME/bin/terraform"
-            which terraform && rm -f "\$(which terraform)" || true
+            # Super aggressive cleanup for terraform
+            echo "Performing deep cleanup of any existing terraform installations..."
+            find \$HOME/bin -name "terraform*" -exec rm -rf {} \\; 2>/dev/null || true
+            find /tmp -name "terraform*" -exec rm -rf {} \\; 2>/dev/null || true
+            which terraform && rm -f "\$(which terraform)" 2>/dev/null || true
+            
+            # Create a clean directory for terraform
+            rm -rf \$HOME/bin/terraform* 2>/dev/null || true
             
             echo "Installing Terraform \$TERRAFORM_VERSION..."
+            # Download to /tmp to avoid any permission issues
+            cd /tmp
             curl -fsSL "https://releases.hashicorp.com/terraform/\${TERRAFORM_VERSION}/terraform_\${TERRAFORM_VERSION}_linux_amd64.zip" -o terraform.zip
             unzip -q -o terraform.zip
             chmod +x terraform
-            mv -f terraform \$HOME/bin/
-            rm -f terraform.zip
+            cp -f terraform \$HOME/bin/
+            rm -f terraform terraform.zip
+            cd -
             
             # Verify installation
             echo "Verifying Terraform installation..."
