@@ -2,58 +2,77 @@ def call(Map config = [:]) {
     def clusterName = config.clusterName ?: 'easyshop-prod'
     def region = config.region ?: 'eu-north-1'
     def terraformDir = config.terraformDir ?: 'terraform'
-    def forceRecreate = config.forceRecreate ?: true
+    def forceRecreate = config.forceRecreate ?: false
     
-    sh """
+    sh """#!/bin/bash
+        set -e
+        
+        # Change to terraform directory
         cd ${terraformDir}
         
-        # Check if cluster already exists
-        if aws eks describe-cluster --name ${clusterName} --region ${region} &> /dev/null; then
+        # Verify AWS credentials are working
+        echo "Verifying AWS credentials..."
+        aws sts get-caller-identity || {
+            echo "AWS credentials verification failed. Attempting to refresh credentials..."
+            # Try to refresh credentials if using AWS SSO or role assumption
+            aws sso login || true
+        }
+        
+        # Verify credentials again after potential refresh
+        aws sts get-caller-identity || {
+            echo "AWS credentials still invalid. Please check Jenkins credentials configuration."
+            exit 1
+        }
+        
+        # Check if cluster exists
+        if aws eks describe-cluster --name ${clusterName} --region ${region} 2>/dev/null; then
             echo "Cluster ${clusterName} already exists."
             
             if [ "${forceRecreate}" = "true" ]; then
                 echo "Force recreate enabled. Destroying existing cluster..."
                 
-                # Get current kubeconfig to ensure we can clean up resources properly
+                # Configure kubectl to use the existing cluster
                 aws eks update-kubeconfig --name ${clusterName} --region ${region}
                 
-                # Delete all namespaces except kube-system, default, and kube-public
-                for ns in \$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\\n' | grep -v -E 'kube-system|default|kube-public'); do
-                    echo "Deleting namespace: \$ns"
-                    kubectl delete namespace \$ns --wait=false
-                done
+                # Delete any existing resources that might block deletion
+                echo "Cleaning up resources before destroying cluster..."
+                kubectl delete svc --all --all-namespaces || true
+                kubectl delete ingress --all --all-namespaces || true
+                kubectl delete pvc --all --all-namespaces || true
                 
                 # Initialize Terraform
-                terraform init
+                terraform init -upgrade
                 
                 # Destroy existing infrastructure
                 terraform destroy -auto-approve
                 
-                # Wait a bit to ensure AWS resources are fully released
+                # Wait for resources to be fully released
                 echo "Waiting for AWS resources to be fully released..."
                 sleep 60
             else
-                echo "Using existing cluster. Skipping recreation."
-                aws eks update-kubeconfig --name ${clusterName} --region ${region}
-                return
+                echo "Using existing cluster. Set forceRecreate=true to recreate."
+                exit 0
             fi
         else
             echo "Cluster ${clusterName} does not exist. Creating new cluster..."
         fi
         
-        # Initialize and apply Terraform
-        terraform init
-        terraform apply -auto-approve -var="cluster_name=${clusterName}" -var="region=${region}"
+        # Initialize Terraform
+        echo "Initializing Terraform..."
+        terraform init -upgrade
         
-        # Update kubeconfig
+        # Apply Terraform configuration
+        echo "Applying Terraform configuration..."
+        terraform apply -auto-approve
+        
+        # Configure kubectl to use the new cluster
+        echo "Configuring kubectl..."
         aws eks update-kubeconfig --name ${clusterName} --region ${region}
         
         # Verify cluster is accessible
-        kubectl cluster-info
+        echo "Verifying cluster access..."
+        kubectl get nodes
         
-        # Create necessary namespaces if they don't exist
-        kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-        kubectl create namespace easyshop --dry-run=client -o yaml | kubectl apply -f -
-        kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+        echo "Infrastructure deployment completed successfully."
     """
 }
