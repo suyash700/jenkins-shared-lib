@@ -19,6 +19,16 @@ def call(Map config = [:]) {
     sh """#!/bin/bash
         set -e
         
+        # Change to project root directory
+        cd ${WORKSPACE}
+        
+        # Make bootstrap script executable
+        chmod +x scripts/terraform-bootstrap.sh
+        
+        # Run the bootstrap script to create S3 bucket and DynamoDB table
+        echo "Setting up Terraform backend infrastructure..."
+        ./scripts/terraform-bootstrap.sh
+        
         # Change to terraform directory
         cd ${terraformDir}
         
@@ -72,7 +82,7 @@ EOF
                 kubectl delete pvc --all --all-namespaces || true
                 
                 # Initialize Terraform
-                terraform init -upgrade
+                terraform init -reconfigure
                 
                 # Create terraform.tfvars file
                 cat > terraform.tfvars << EOF
@@ -97,7 +107,7 @@ EOF
         
         # Initialize Terraform
         echo "Initializing Terraform..."
-        terraform init -upgrade
+        terraform init -reconfigure
         
         # Create terraform.tfvars file
         cat > terraform.tfvars << EOF
