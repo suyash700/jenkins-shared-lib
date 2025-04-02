@@ -35,60 +35,93 @@ def call() {
                     terraform init -upgrade
                 '''
                 
-                // Update the ArgoCD handling section in the provisionInfrastructure.groovy file
-                // Around line 38-58
-                
-                // Check if ArgoCD namespace exists and handle it
+                // Check for existing resources and handle them properly
                 sh '''
-                    # Check if we can access the Kubernetes cluster
-                    if kubectl get namespaces &>/dev/null; then
-                        # Check if ArgoCD namespace exists
-                        if kubectl get namespace argocd &>/dev/null; then
-                            echo "ArgoCD namespace already exists, updating Terraform state..."
-                            # Import the namespace into Terraform state if it's not already there
-                            terraform import kubernetes_namespace.argocd argocd || true
+                    # First, ensure we can connect to the cluster
+                    if aws eks update-kubeconfig --name easyshop-prod --region eu-north-1 &>/dev/null; then
+                        echo "Successfully connected to the EKS cluster"
+                        
+                        # Check and handle existing namespaces
+                        for ns in argocd ingress-nginx cert-manager monitoring; do
+                            if kubectl get namespace $ns &>/dev/null; then
+                                echo "$ns namespace already exists, updating Terraform state..."
+                                if [ "$ns" = "argocd" ]; then
+                                    terraform import kubernetes_namespace.argocd $ns || true
+                                elif [ "$ns" = "ingress-nginx" ]; then
+                                    terraform import kubernetes_namespace.ingress_nginx $ns || true
+                                elif [ "$ns" = "cert-manager" ]; then
+                                    terraform import kubernetes_namespace.cert_manager $ns || true
+                                fi
+                            fi
+                        done
+                        
+                        # Check and handle existing Helm releases
+                        if helm list -n ingress-nginx | grep ingress-nginx &>/dev/null; then
+                            echo "NGINX Ingress Helm release already exists, removing from Terraform state"
+                            terraform state list | grep helm_release.nginx_ingress && terraform state rm helm_release.nginx_ingress || true
+                            
+                            # Uninstall the existing Helm release to avoid conflicts
+                            echo "Uninstalling existing NGINX Ingress Helm release..."
+                            helm uninstall ingress-nginx -n ingress-nginx || true
+                            
+                            # Wait for resources to be deleted
+                            echo "Waiting for NGINX Ingress resources to be deleted..."
+                            kubectl wait --for=delete deployment/ingress-nginx-controller -n ingress-nginx --timeout=120s || true
+                            sleep 30
                         fi
                         
-                        # Check if ArgoCD Helm release exists
                         if helm list -n argocd | grep argocd &>/dev/null; then
                             echo "ArgoCD Helm release already exists, removing from Terraform state"
                             terraform state list | grep helm_release.argocd && terraform state rm helm_release.argocd || true
                         fi
                         
-                        # Check if ingress-nginx namespace exists
-                        if kubectl get namespace ingress-nginx &>/dev/null; then
-                            echo "ingress-nginx namespace already exists, updating Terraform state..."
-                            # Import the namespace into Terraform state if it's not already there
-                            terraform import kubernetes_namespace.ingress_nginx ingress-nginx || true
+                        if helm list -n cert-manager | grep cert-manager &>/dev/null; then
+                            echo "Cert Manager Helm release already exists, removing from Terraform state"
+                            terraform state list | grep helm_release.cert_manager && terraform state rm helm_release.cert_manager || true
                         fi
-                        
-                        # Check if NGINX Ingress Helm release exists
-                        if helm list -n ingress-nginx | grep ingress-nginx &>/dev/null; then
-                            echo "NGINX Ingress Helm release already exists, updating Terraform state"
-                            terraform state list | grep helm_release.nginx_ingress && terraform state rm helm_release.nginx_ingress || true
-                        fi
+                    else
+                        echo "Could not connect to EKS cluster, skipping resource checks"
                     fi
                 '''
                 
                 // Plan and apply with improved error handling
                 sh '''
+                    # Create a plan file
                     terraform plan -var="environment=prod" -var="aws_region=eu-north-1" -out=tfplan
-                    # Apply with targeted approach to avoid namespace issues
-                    terraform apply -auto-approve tfplan || {
+                    
+                    # Try to apply the full plan first
+                    if terraform apply -auto-approve tfplan; then
+                        echo "Terraform apply completed successfully"
+                    else
                         echo "Initial apply failed, trying targeted approach..."
-                        # Skip the namespace creation and apply everything else
-                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=module.vpc -target=module.eks -target=module.iam_assumable_role_admin || true
                         
-                        # Apply ingress-nginx separately
-                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=kubernetes_namespace.ingress_nginx -target=helm_release.nginx_ingress || true
+                        # Apply core infrastructure first
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" \
+                            -target=module.vpc \
+                            -target=module.eks \
+                            -target=module.iam_assumable_role_admin || true
                         
-                        # Apply cert-manager separately
-                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" -target=kubernetes_namespace.cert_manager || true
+                        # Update kubeconfig to ensure we're connected to the new cluster
+                        aws eks update-kubeconfig --name easyshop-prod --region eu-north-1
+                        
+                        # Apply namespaces
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" \
+                            -target=kubernetes_namespace.ingress_nginx \
+                            -target=kubernetes_namespace.cert_manager \
+                            -target=kubernetes_namespace.argocd || true
+                        
+                        # Apply NGINX Ingress separately
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" \
+                            -target=helm_release.nginx_ingress || true
                         
                         # Wait for ingress controller to be ready
                         echo "Waiting for ingress controller to be ready..."
                         kubectl wait --for=condition=available --timeout=300s deployment/ingress-nginx-controller -n ingress-nginx || true
-                    }
+                        
+                        # Apply ArgoCD separately
+                        terraform apply -auto-approve -var="environment=prod" -var="aws_region=eu-north-1" \
+                            -target=helm_release.argocd || true
+                    fi
                 '''
                 
                 // Extract and store outputs
@@ -113,6 +146,26 @@ def call() {
                 
                 env.INGRESS_DNS = ingressDns
                 echo "NGINX Ingress DNS: ${env.INGRESS_DNS}"
+                
+                // Verify resources are properly created
+                sh '''
+                    echo "Verifying infrastructure resources..."
+                    
+                    # Check EKS cluster
+                    aws eks describe-cluster --name easyshop-prod --region eu-north-1 || echo "EKS cluster not found"
+                    
+                    # Check if we can connect to the cluster
+                    kubectl cluster-info || echo "Cannot connect to Kubernetes cluster"
+                    
+                    # Check namespaces
+                    kubectl get namespaces || echo "Cannot get namespaces"
+                    
+                    # Check NGINX Ingress
+                    kubectl get pods -n ingress-nginx || echo "Cannot get NGINX Ingress pods"
+                    
+                    # Check NGINX Ingress service
+                    kubectl get svc -n ingress-nginx || echo "Cannot get NGINX Ingress service"
+                '''
             }
         }
     } catch (Exception e) {
