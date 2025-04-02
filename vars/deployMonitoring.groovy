@@ -212,11 +212,13 @@ EOF
             helm repo add grafana https://grafana.github.io/helm-charts
             helm repo update
             
-            # Check if Loki is already installed
-            if helm list -n monitoring | grep loki &>/dev/null; then
+            # Check if Loki is already installed - improved check
+            if helm list -n monitoring | grep -q "^loki[[:space:]]"; then
                 echo "Loki is already installed, uninstalling it first..."
                 helm uninstall loki -n monitoring
                 sleep 30
+            else
+                echo "Loki is not installed, proceeding with installation..."
             fi
             
             # Install Loki with smaller resource requirements and increased timeout

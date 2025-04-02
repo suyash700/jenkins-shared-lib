@@ -44,11 +44,13 @@ def call() {
             
             # Uninstall Loki first if it exists
             echo "Checking if Loki exists..."
-            if helm ls -n monitoring | grep loki; then
+            if helm ls -n monitoring | grep -q "^loki[[:space:]]"; then
                 echo "Uninstalling existing Loki installation..."
                 helm uninstall loki -n monitoring
                 # Wait for resources to be deleted
                 sleep 30
+            else
+                echo "Loki is not installed, proceeding with installation..."
             fi
             
             # Install Loki with smaller resource requirements
