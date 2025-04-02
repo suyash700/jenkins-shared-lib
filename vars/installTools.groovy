@@ -22,6 +22,14 @@ def call(Map config = [:]) {
             test "\$(printf '%s\\n' "\$1" "\$2" | sort -V | head -n1)" != "\$1"
         }
         
+        # Function to check and remove if directory exists
+        check_and_remove_dir() {
+            if [ -d "\$1" ]; then
+                echo "Removing existing directory \$1..."
+                rm -rf "\$1"
+            fi
+        }
+        
         # AWS CLI
         if echo "${toolsStr}" | grep -q "aws"; then
             if ! command -v aws &> /dev/null; then
@@ -48,6 +56,7 @@ def call(Map config = [:]) {
         if echo "${toolsStr}" | grep -q "kubectl"; then
             if ! command -v kubectl &> /dev/null; then
                 echo "Installing kubectl..."
+                check_and_remove_dir "\$HOME/bin/kubectl"
                 curl -LO "https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
                 chmod +x kubectl
                 mv -f ./kubectl \$HOME/bin/  
@@ -55,9 +64,10 @@ def call(Map config = [:]) {
                 KUBECTL_VERSION=\$(kubectl version --client -o json | grep -o '"gitVersion": *"[^"]*"' | head -1 | grep -o '[0-9.]*')
                 if version_gt "${versions.kubectl}" "\$KUBECTL_VERSION"; then
                     echo "Updating kubectl from version \$KUBECTL_VERSION to ${versions.kubectl}..."
+                    check_and_remove_dir "\$HOME/bin/kubectl"
                     curl -LO "https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
                     chmod +x kubectl
-                    mv ./kubectl \$HOME/bin/
+                    mv -f ./kubectl \$HOME/bin/
                 else
                     echo "kubectl version \$KUBECTL_VERSION is already installed and up to date"
                 fi
@@ -68,14 +78,17 @@ def call(Map config = [:]) {
         if echo "${toolsStr}" | grep -q "eksctl"; then
             if ! command -v eksctl &> /dev/null; then
                 echo "Installing eksctl..."
+                check_and_remove_dir "\$HOME/bin/eksctl"
                 curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_\$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-                mv -f /tmp/eksctl \$HOME/bin/  # Added -f flag to force overwrite
+                mv -f /tmp/eksctl \$HOME/bin/
+                chmod +x \$HOME/bin/eksctl
             else
                 EKSCTL_VERSION=\$(eksctl version | cut -d' ' -f3)
                 if version_gt "${versions.eksctl}" "\$EKSCTL_VERSION"; then
                     echo "Updating eksctl from version \$EKSCTL_VERSION to ${versions.eksctl}..."
+                    check_and_remove_dir "\$HOME/bin/eksctl"
                     curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_\$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
-                    mv /tmp/eksctl \$HOME/bin/
+                    mv -f /tmp/eksctl \$HOME/bin/
                     chmod +x \$HOME/bin/eksctl
                 else
                     echo "eksctl version \$EKSCTL_VERSION is already installed and up to date"
@@ -88,6 +101,7 @@ def call(Map config = [:]) {
             TERRAFORM_VERSION="${versions.terraform}"
             if ! command -v terraform &> /dev/null; then
                 echo "Installing Terraform \$TERRAFORM_VERSION..."
+                check_and_remove_dir "\$HOME/bin/terraform"
                 curl -fsSL "https://releases.hashicorp.com/terraform/\${TERRAFORM_VERSION}/terraform_\${TERRAFORM_VERSION}_linux_amd64.zip" -o terraform.zip
                 unzip -q -o terraform.zip  
                 mv -f terraform \$HOME/bin/ 
@@ -97,6 +111,7 @@ def call(Map config = [:]) {
                 CURRENT_VERSION=\$(terraform version -json | grep -o '"terraform_version": *"[^"]*"' | grep -o '[0-9.]*')
                 if [ "\$CURRENT_VERSION" != "\$TERRAFORM_VERSION" ]; then
                     echo "Updating Terraform from version \$CURRENT_VERSION to \$TERRAFORM_VERSION"
+                    check_and_remove_dir "\$HOME/bin/terraform"
                     curl -fsSL "https://releases.hashicorp.com/terraform/\${TERRAFORM_VERSION}/terraform_\${TERRAFORM_VERSION}_linux_amd64.zip" -o terraform.zip
                     unzip -q -o terraform.zip  
                     mv -f terraform \$HOME/bin/ 
@@ -113,6 +128,7 @@ def call(Map config = [:]) {
             HELM_VERSION="${versions.helm}"
             if ! command -v helm &> /dev/null; then
                 echo "Installing Helm \$HELM_VERSION..."
+                check_and_remove_dir "\$HOME/bin/helm"
                 curl -fsSL "https://get.helm.sh/helm-v\${HELM_VERSION}-linux-amd64.tar.gz" | tar -zxf - -C /tmp
                 mv -f /tmp/linux-amd64/helm \$HOME/bin/ 
                 chmod +x \$HOME/bin/helm
@@ -120,6 +136,7 @@ def call(Map config = [:]) {
                 CURRENT_VERSION=\$(helm version --short | cut -d'+' -f1 | cut -d'v' -f2)
                 if [ "\$CURRENT_VERSION" != "\$HELM_VERSION" ]; then
                     echo "Updating Helm from version \$CURRENT_VERSION to \$HELM_VERSION"
+                    check_and_remove_dir "\$HOME/bin/helm"
                     curl -fsSL "https://get.helm.sh/helm-v\${HELM_VERSION}-linux-amd64.tar.gz" | tar -zxf - -C /tmp
                     mv -f /tmp/linux-amd64/helm \$HOME/bin/  
                     chmod +x \$HOME/bin/helm
