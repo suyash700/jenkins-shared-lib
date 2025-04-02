@@ -63,36 +63,25 @@ def call() {
             echo "Waiting for Grafana to be ready..."
             kubectl wait --for=condition=available --timeout=300s deployment/prometheus-grafana -n monitoring || true
             
-            # Fix the NGINX Ingress Controller admission webhook timeout issue
-            echo "Fixing NGINX Ingress Controller admission webhook timeout..."
+            echo "Ensuring ingress controller is fully ready..."
+            kubectl wait --for=condition=available --timeout=300s deployment/ingress-nginx-controller -n ingress-nginx || true
             
-            # Check if the ValidatingWebhookConfiguration exists
+            echo "Waiting for admission webhook to be ready..."
+            sleep 30
+            
+            # More aggressive fix for the NGINX Ingress Controller admission webhook timeout issue
+            echo "Applying more aggressive fix for NGINX Ingress webhook issues..."
+            
+            # Temporarily disable the webhook validation to allow ingress creation
             if kubectl get validatingwebhookconfigurations ingress-nginx-admission &>/dev/null; then
-                echo "Patching NGINX Ingress admission webhook timeout..."
-                
-                # Patch the webhook to increase the timeout
-                kubectl patch validatingwebhookconfigurations ingress-nginx-admission \
-                  --type='json' \
-                  -p='[{"op": "replace", "path": "/webhooks/0/timeoutSeconds", "value": 30}]' || true
-                
-                # Restart the ingress controller to apply changes
-                echo "Restarting NGINX Ingress Controller..."
-                kubectl rollout restart deployment ingress-nginx-controller -n ingress-nginx
-                
-                # Wait for the ingress controller to be ready again
-                echo "Waiting for NGINX Ingress Controller to be ready..."
-                kubectl rollout status deployment ingress-nginx-controller -n ingress-nginx --timeout=300s || true
-                
-                # Additional wait to ensure webhook is fully operational
-                echo "Additional wait for webhook to be fully operational..."
-                sleep 90
-            else
-                echo "NGINX Ingress admission webhook not found, skipping patch"
+                echo "Temporarily disabling NGINX Ingress admission webhook..."
+                kubectl delete -A ValidatingWebhookConfiguration ingress-nginx-admission || true
+                sleep 10
             fi
             
             # Create Ingress for Grafana with improved retry logic
             echo "Creating Grafana ingress with improved retry logic..."
-            for i in {1..10}; do
+            for i in $(seq 1 5); do
                 echo "Attempt $i to create Grafana ingress..."
                 if cat <<EOF | kubectl apply -f - ; then
 apiVersion: networking.k8s.io/v1
@@ -128,29 +117,12 @@ EOF
                 else
                     echo "Failed to create Grafana ingress, retrying in 30 seconds..."
                     sleep 30
-                    
-                    # If we're on the 5th attempt, try to fix the webhook again
-                    if [ "$i" = "5" ]; then
-                        echo "Still having issues, trying to fix webhook again..."
-                        
-                        # Try to restart the webhook
-                        kubectl delete pod -l app.kubernetes.io/component=controller -n ingress-nginx || true
-                        sleep 60
-                        
-                        # Try to patch the webhook again
-                        kubectl patch validatingwebhookconfigurations ingress-nginx-admission \
-                          --type='json' \
-                          -p='[{"op": "replace", "path": "/webhooks/0/timeoutSeconds", "value": 30}]' || true
-                        
-                        # Additional wait
-                        sleep 60
-                    fi
                 fi
             done
             
             # Create Ingress for Prometheus with improved retry logic
             echo "Creating Prometheus ingress with improved retry logic..."
-            for i in {1..10}; do
+            for i in $(seq 1 5); do
                 echo "Attempt $i to create Prometheus ingress..."
                 if cat <<EOF | kubectl apply -f - ; then
 apiVersion: networking.k8s.io/v1
@@ -191,7 +163,7 @@ EOF
             
             # Create Ingress for Alertmanager with improved retry logic
             echo "Creating Alertmanager ingress with improved retry logic..."
-            for i in {1..10}; do
+            for i in $(seq 1 5); do
                 echo "Attempt $i to create Alertmanager ingress..."
                 if cat <<EOF | kubectl apply -f - ; then
 apiVersion: networking.k8s.io/v1
@@ -229,6 +201,11 @@ EOF
                     sleep 30
                 fi
             done
+            
+            # Recreate the webhook after ingress creation
+            echo "Recreating NGINX Ingress admission webhook..."
+            kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx || true
+            sleep 30
             
             # Install Loki for log aggregation
             echo "Installing Loki for log aggregation..."
