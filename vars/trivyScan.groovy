@@ -1,7 +1,7 @@
 def call(Map config = [:]) {
     def imageName = config.imageName ?: ''
     def imageTag = config.imageTag ?: 'latest'
-    def threshold = config.threshold ?: 150  // Increased threshold based on your logs
+    def threshold = config.threshold ?: 150
     def severity = config.severity ?: 'HIGH,CRITICAL'
     def outputDir = config.outputDir ?: 'trivy-results'
     
@@ -29,122 +29,10 @@ def call(Map config = [:]) {
         # Create directory for scan results
         mkdir -p ${outputDir}
         
-        # Create HTML template file for Trivy with proper permissions - Updated for Trivy 0.48.0
-        echo "Creating Trivy HTML template..."
-        cat > /tmp/trivy-template.tpl << 'EOL'
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8">
-    <title>Trivy Scan Report</title>
-    <style>
-      body {
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        color: #333;
-        font-size: 14px;
-        padding: 20px;
-      }
-      h1 {
-        font-size: 24px;
-        font-weight: 600;
-        margin-bottom: 20px;
-      }
-      h2 {
-        font-size: 20px;
-        font-weight: 500;
-        margin-top: 30px;
-        margin-bottom: 15px;
-      }
-      table {
-        border-collapse: collapse;
-        width: 100%;
-        margin-bottom: 20px;
-      }
-      th, td {
-        text-align: left;
-        padding: 8px;
-        border: 1px solid #ddd;
-      }
-      th {
-        background-color: #f2f2f2;
-        font-weight: 500;
-      }
-      tr:nth-child(even) {
-        background-color: #f9f9f9;
-      }
-      .critical {
-        background-color: #fde0dc;
-      }
-      .high {
-        background-color: #fef9e7;
-      }
-      .medium {
-        background-color: #eaf6f9;
-      }
-      .low {
-        background-color: #f0f4f8;
-      }
-      .unknown {
-        background-color: #f5f5f5;
-      }
-      .summary {
-        margin-bottom: 20px;
-        padding: 15px;
-        background-color: #f8f9fa;
-        border-radius: 4px;
-      }
-    </style>
-  </head>
-  <body>
-    <h1>Trivy Scan Report</h1>
-    <div class="summary">
-      <h2>Summary</h2>
-      <table>
-        <tr>
-          <th>Image</th>
-          <td>{{ .ArtifactName }}</td>
-        </tr>
-        <tr>
-          <th>Total Vulnerabilities</th>
-          <td>{{ $vulnCount := 0 }}{{ range . }}{{ range .Vulnerabilities }}{{ $vulnCount = add $vulnCount 1 }}{{ end }}{{ end }}{{ $vulnCount }}</td>
-        </tr>
-      </table>
-    </div>
-    {{ range . }}
-    <h2>{{ .Type }}</h2>
-    {{ if .Vulnerabilities }}
-    <table>
-      <tr>
-        <th>Package</th>
-        <th>Vulnerability ID</th>
-        <th>Severity</th>
-        <th>Installed Version</th>
-        <th>Fixed Version</th>
-        <th>Description</th>
-      </tr>
-      {{ range .Vulnerabilities }}
-      <tr class="{{ lower .Severity }}">
-        <td>{{ .PkgName }}</td>
-        <td>{{ .VulnerabilityID }}</td>
-        <td>{{ .Severity }}</td>
-        <td>{{ .InstalledVersion }}</td>
-        <td>{{ .FixedVersion }}</td>
-        <td>{{ .Description }}</td>
-      </tr>
-      {{ end }}
-    </table>
-    {{ else }}
-    <p>No vulnerabilities found.</p>
-    {{ end }}
-    {{ end }}
-  </body>
-</html>
-EOL
-        chmod 644 /tmp/trivy-template.tpl
-        ls -la /tmp/trivy-template.tpl
-        
+        # Skip the HTML template approach and use the built-in formats
         echo "Scanning ${imageName}:${imageTag} for vulnerabilities..."
-        # Scan the image and save results (with more verbose output)
+        
+        # Run JSON scan for data processing
         echo "Running JSON scan..."
         trivy image --exit-code 0 --severity ${severity} --timeout 15m \\
           --output ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.json --format json \\
@@ -156,16 +44,11 @@ EOL
             echo '{"Results":[]}' > ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.json
         fi
         
-        # Generate HTML report with more verbose output - using the table format as fallback
-        echo "Running HTML template scan..."
-        trivy image --format template --template "@/tmp/trivy-template.tpl" \\
-          --output ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.html \\
-          ${imageName}:${imageTag} || { 
-            echo "HTML template scan failed, using table format as fallback"
-            trivy image --format table \\
-              --output ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.txt \\
-              ${imageName}:${imageTag} || echo "Table scan also failed but continuing"
-          }
+        # Generate HTML report using the built-in table format instead of custom template
+        echo "Running HTML scan using built-in format..."
+        trivy image --exit-code 0 --severity ${severity} --timeout 15m \\
+          --output ${outputDir}/scan-\$(echo ${imageName} | tr '/' '-')-${imageTag}.html --format table \\
+          ${imageName}:${imageTag} || { echo "HTML scan failed but continuing"; }
         
         # Count critical vulnerabilities with fallback
         echo "Counting critical vulnerabilities..."
@@ -180,6 +63,36 @@ EOL
         fi
         
         echo "Found \$CRITICAL_VULNS critical vulnerabilities"
+        
+        # Create a simple HTML summary report manually
+        echo "Creating summary HTML report..."
+        cat > ${outputDir}/summary-\$(echo ${imageName} | tr '/' '-')-${imageTag}.html << EOF
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Trivy Scan Summary</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; }
+      h1 { color: #333; }
+      .summary { background-color: #f5f5f5; padding: 15px; border-radius: 5px; }
+      .critical { color: #d9534f; }
+      .high { color: #f0ad4e; }
+      .medium { color: #5bc0de; }
+      .low { color: #5cb85c; }
+    </style>
+  </head>
+  <body>
+    <h1>Vulnerability Scan Summary</h1>
+    <div class="summary">
+      <h2>Image: ${imageName}:${imageTag}</h2>
+      <p><strong class="critical">Critical Vulnerabilities:</strong> \$CRITICAL_VULNS</p>
+      <p>Scan completed on \$(date)</p>
+      <p>For detailed results, please see the full scan report.</p>
+    </div>
+  </body>
+</html>
+EOF
         
         # Fail the build if there are too many critical vulnerabilities
         if [ \$CRITICAL_VULNS -gt ${threshold} ]; then
