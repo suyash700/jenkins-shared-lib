@@ -10,7 +10,11 @@ def call(Map config = [:]) {
     ]
     def configureAws = config.configureAws ?: true
     
-    sh """
+    // Convert tools array to a space-separated string for sh script
+    def toolsStr = tools.join(" ")
+    
+    sh """#!/bin/bash
+        set -e
         mkdir -p \$HOME/bin
         
         # Function to compare versions
@@ -19,7 +23,7 @@ def call(Map config = [:]) {
         }
         
         # AWS CLI
-        if [[ "\${tools[@]}" =~ "aws" ]]; then
+        if echo "${toolsStr}" | grep -q "aws"; then
             if ! command -v aws &> /dev/null; then
                 echo "Installing AWS CLI..."
                 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
@@ -41,7 +45,7 @@ def call(Map config = [:]) {
         fi
         
         # kubectl
-        if [[ "\${tools[@]}" =~ "kubectl" ]]; then
+        if echo "${toolsStr}" | grep -q "kubectl"; then
             if ! command -v kubectl &> /dev/null; then
                 echo "Installing kubectl..."
                 curl -LO "https://dl.k8s.io/release/\$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
@@ -61,7 +65,7 @@ def call(Map config = [:]) {
         fi
         
         # eksctl
-        if [[ "\${tools[@]}" =~ "eksctl" ]]; then
+        if echo "${toolsStr}" | grep -q "eksctl"; then
             if ! command -v eksctl &> /dev/null; then
                 echo "Installing eksctl..."
                 curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_\$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
@@ -81,7 +85,7 @@ def call(Map config = [:]) {
         fi
         
         # Terraform
-        if [[ "\${tools[@]}" =~ "terraform" ]]; then
+        if echo "${toolsStr}" | grep -q "terraform"; then
             TERRAFORM_VERSION="${versions.terraform}"
             if ! command -v terraform &> /dev/null; then
                 echo "Installing Terraform \$TERRAFORM_VERSION..."
@@ -106,7 +110,7 @@ def call(Map config = [:]) {
         fi
         
         # Helm
-        if [[ "\${tools[@]}" =~ "helm" ]]; then
+        if echo "${toolsStr}" | grep -q "helm"; then
             HELM_VERSION="${versions.helm}"
             if ! command -v helm &> /dev/null; then
                 echo "Installing Helm \$HELM_VERSION..."
