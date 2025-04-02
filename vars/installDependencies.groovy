@@ -8,7 +8,7 @@ def call() {
         mkdir -p $HOME/bin
         export PATH=$HOME/bin:$PATH
         
-        # Install AWS CLI
+        # Install AWS CLI without sudo
         if ! command -v aws &> /dev/null; then
             echo "Installing AWS CLI..."
             curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
@@ -19,7 +19,7 @@ def call() {
             echo "AWS CLI already installed: $(aws --version)"
         fi
         
-        # Install kubectl
+        # Install kubectl without sudo
         if ! command -v kubectl &> /dev/null; then
             echo "Installing kubectl..."
             curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
@@ -29,7 +29,7 @@ def call() {
             echo "kubectl already installed: $(kubectl version --client)"
         fi
         
-        # Install eksctl
+        # Install eksctl without sudo
         if ! command -v eksctl &> /dev/null; then
             echo "Installing eksctl..."
             curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
@@ -39,35 +39,32 @@ def call() {
             echo "eksctl already installed: $(eksctl version)"
         fi
         
-        # Install Helm
+        # Install Helm without sudo
         if ! command -v helm &> /dev/null; then
             echo "Installing Helm..."
-            curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-            chmod +x get_helm.sh
-            ./get_helm.sh
-            rm get_helm.sh
+            curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | HELM_INSTALL_DIR=$HOME/bin bash
         else
             echo "Helm already installed: $(helm version --short)"
         fi
         
-        # Install Trivy
-        if ! command -v trivy &> /dev/null; then
-            echo "Installing Trivy..."
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b $HOME/bin
-        else
-            echo "Trivy already installed: $(trivy --version)"
-        fi
+        # Configure AWS CLI with credentials from environment variables
+        mkdir -p ~/.aws
         
-        # Add Helm repositories
-        echo "Adding Helm repositories..."
-        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-        helm repo add jetstack https://charts.jetstack.io
-        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-        helm repo add grafana https://grafana.github.io/helm-charts
-        helm repo add argo https://argoproj.github.io/argo-helm
-        helm repo update
+        cat > ~/.aws/credentials << EOF
+[default]
+aws_access_key_id = ${AWS_ACCESS_KEY_ID}
+aws_secret_access_key = ${AWS_SECRET_ACCESS_KEY}
+region = ${AWS_DEFAULT_REGION}
+EOF
         
-        echo "All dependencies installed successfully!"
+        cat > ~/.aws/config << EOF
+[default]
+region = ${AWS_DEFAULT_REGION}
+output = json
+EOF
+        
+        chmod 600 ~/.aws/credentials
+        chmod 600 ~/.aws/config
     '''
 }
 
