@@ -1,119 +1,135 @@
 #!/usr/bin/env groovy
 
 def call() {
-    echo "Deploying EasyShop application"
+    echo "Deploying EasyShop application..."
     
-    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
-                      credentialsId: 'aws-access-key', 
-                      accessKeyVariable: 'AWS_ACCESS_KEY_ID', 
-                      secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
+    // Ensure we're connected to the right cluster
+    sh """
+        aws eks update-kubeconfig --name ${env.EKS_CLUSTER_NAME} --region ${env.AWS_DEFAULT_REGION}
+    """
+    
+    // Install ArgoCD if not already installed
+    sh '''
+        # Check if ArgoCD is installed
+        if ! kubectl get deployment argocd-server -n argocd &>/dev/null; then
+            echo "Installing ArgoCD..."
+            helm upgrade --install argocd argo/argo-cd \
+                --namespace argocd \
+                --set server.service.type=ClusterIP
+        else
+            echo "ArgoCD is already installed"
+        fi
         
-        // Set AWS region
-        env.AWS_DEFAULT_REGION = 'eu-north-1'
+        # Wait for ArgoCD to be ready
+        kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd || true
         
-        // Ensure we're connected to the right cluster
-        sh """
-            aws eks update-kubeconfig --name ${env.EKS_CLUSTER_NAME} --region eu-north-1
-            kubectl config current-context
-        """
+        # Configure ArgoCD repository
+        kubectl patch configmap argocd-cm -n argocd --type merge -p '{"data":{"repositories":"- url: https://github.com/iemafzalhassan/EasyShop-KIND.git\\n  type: git\\n"}}' || true
         
-        // Install EBS CSI Driver for storage
-        sh """
-            chmod +x scripts/install-ebs-csi-driver.sh
-            ./scripts/install-ebs-csi-driver.sh
-        """
+        # Restart ArgoCD components to apply changes
+        kubectl rollout restart deployment argocd-repo-server -n argocd
+        kubectl rollout restart deployment argocd-server -n argocd
+    '''
+    
+    // Deploy EasyShop application
+    sh '''
+        # Create easyshop namespace
+        kubectl create namespace easyshop --dry-run=client -o yaml | kubectl apply -f -
         
-        // Create namespace if it doesn't exist
-        sh '''
-            kubectl create namespace easyshop --dry-run=client -o yaml | kubectl apply -f -
-        '''
+        # Create ConfigMap for application configuration
+        cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: easyshop-config
+  namespace: easyshop
+data:
+  MONGODB_URI: "mongodb://mongodb-service.easyshop.svc.cluster.local:27017/easyshop"
+  REDIS_URI: "redis://redis.easyshop.svc.cluster.local:6379"
+  NODE_ENV: "production"
+  NEXT_PUBLIC_API_URL: "https://easyshop.${DOMAIN_NAME}/api"
+  NEXTAUTH_URL: "https://easyshop.${DOMAIN_NAME}"
+  NEXTAUTH_SECRET: "HmaFjYZ2jbUK7Ef+wZrBiJei4ZNGBAJ5IdiOGAyQegw="
+  JWT_SECRET: "e5e425764a34a2117ec2028bd53d6f1388e7b90aeae9fa7735f2469ea3a6cc8c"
+EOF
         
-        // Apply Kubernetes manifests and check resources
-        sh """
-            # Apply all Kubernetes manifests in order
-            kubectl apply -f kubernetes/01-namespace.yaml || true
-            kubectl apply -f kubernetes/02-storage.yaml || true
-            kubectl apply -f kubernetes/03-secrets.yaml || true
-            kubectl apply -f kubernetes/04-configmap.yaml || true
-            kubectl apply -f kubernetes/05-mongodb.yaml || true
-            kubectl apply -f kubernetes/06-redis.yaml || true
-            kubectl apply -f kubernetes/07-service.yaml || true
-            kubectl apply -f kubernetes/08-easyshop-deployment.yaml || true
-            kubectl apply -f kubernetes/09-hpa.yaml || true
-            
-            # Wait for MongoDB and Redis to be ready
-            echo "Waiting for MongoDB to be ready..."
-            kubectl wait --for=condition=ready pod -l app=mongodb -n easyshop --timeout=300s || true
-            
-            echo "Waiting for Redis to be ready..."
-            kubectl wait --for=condition=ready pod -l app=redis -n easyshop --timeout=300s || true
-            
-            # Wait for EasyShop deployment to be ready
-            echo "Waiting for EasyShop deployment to be ready..."
-            kubectl wait --for=condition=available deployment/easyshop -n easyshop --timeout=300s || true
-            
-            # Wait for ingress controller to be fully ready
-            echo "Ensuring ingress controller is fully ready..."
-            kubectl wait --for=condition=available deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s || true
-            
-            # Give the admission webhook some time to be fully operational
-            echo "Waiting for admission webhook to be ready..."
-            sleep 60
-            
-            # Apply ingress with retry logic
-            echo "Creating EasyShop ingress with retry logic..."
-            for i in {1..5}; do
-                echo "Attempt $i to create EasyShop ingress..."
-                kubectl apply -f kubernetes/10-ingress.yaml && break || sleep 30
-            done
-            
-            # Run database migrations if needed
-            echo "Running database migrations..."
-            kubectl apply -f kubernetes/12-migration-job.yaml || true
-            
-            # Check if services are exposed properly
-            echo "Checking service exposure..."
-            kubectl get svc -n easyshop
-            kubectl get ingress -n easyshop
-            
-            # Check if LoadBalancer has an external IP/hostname
-            echo "Checking LoadBalancer status..."
-            kubectl get svc -n ingress-nginx
-        """
-        
-        // Get application URL and verify access
-        sh '''
-            echo "Application URLs:"
-            
-            # Get the EasyShop service URL
-            EASYSHOP_SVC=$(kubectl get svc easyshop-service -n easyshop -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
-            echo "EasyShop Service: $EASYSHOP_SVC"
-            
-            # Get the Ingress URL
-            INGRESS_HOST=$(kubectl get ingress easyshop-ingress -n easyshop -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "Not available yet")
-            echo "Ingress URL: https://$INGRESS_HOST"
-            
-            # Get the NGINX Ingress Controller LoadBalancer URL
-            NGINX_LB=$(kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Not available yet")
-            echo "NGINX Ingress LoadBalancer: $NGINX_LB"
-            
-            # Verify DNS resolution for the ingress host
-            if [ "$INGRESS_HOST" != "Not available yet" ]; then
-                echo "Checking DNS resolution for $INGRESS_HOST..."
-                nslookup $INGRESS_HOST || echo "DNS resolution failed - you may need to add a DNS record pointing to the NGINX LoadBalancer"
+        # Apply all Kubernetes manifests
+        for file in kubernetes/*.yaml; do
+            if [ -f "$file" ] && [ "$(basename $file)" != "00-kind-config.yaml" ]; then
+                echo "Applying $file"
+                kubectl apply -f $file || true
             fi
-            
-            # Provide instructions for DNS setup if needed
-            if [ "$NGINX_LB" != "Not available yet" ] && [ "$INGRESS_HOST" != "Not available yet" ]; then
-                echo ""
-                echo "===== IMPORTANT DNS SETUP INSTRUCTIONS ====="
-                echo "To access your application, create the following DNS records:"
-                echo "1. Create a CNAME record for $INGRESS_HOST pointing to $NGINX_LB"
-                echo "2. Create a CNAME record for argocd.iemafzalhassan.tech pointing to $NGINX_LB"
-                echo "3. Create a CNAME record for grafana.iemafzalhassan.tech pointing to $NGINX_LB"
-                echo "4. Create a CNAME record for prometheus.iemafzalhassan.tech pointing to $NGINX_LB"
-                echo "============================================"
-            fi
-        '''
-    }
+        done
+        
+        # Create Ingress for EasyShop
+        cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: easyshop-ingress
+  namespace: easyshop
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  tls:
+  - hosts:
+    - easyshop.${DOMAIN_NAME}
+    secretName: easyshop-tls
+  rules:
+  - host: easyshop.${DOMAIN_NAME}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: easyshop-service
+            port:
+              number: 80
+EOF
+        
+        # Create Ingress for ArgoCD
+        cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-ingress
+  namespace: argocd
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+spec:
+  tls:
+  - hosts:
+    - argocd.${DOMAIN_NAME}
+    secretName: argocd-tls
+  rules:
+  - host: argocd.${DOMAIN_NAME}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: argocd-server
+            port:
+              number: 443
+EOF
+        
+        # Run database migrations
+        echo "Running database migrations..."
+        kubectl apply -f kubernetes/12-migration-job.yaml || true
+        
+        # Wait for EasyShop deployment to be ready
+        echo "Waiting for EasyShop deployment to be ready..."
+        kubectl wait --for=condition=available --timeout=300s deployment/easyshop -n easyshop || true
+    '''
+    
+    echo "EasyShop application deployed successfully!"
 }
