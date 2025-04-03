@@ -49,6 +49,14 @@ def call(Map config = [:]) {
             exit 1
         fi
         
+        # Get cluster version for reference
+        CLUSTER_VERSION=\$(aws eks describe-cluster --name ${clusterName} --region ${region} --query 'cluster.version' --output text)
+        echo "Cluster version: \$CLUSTER_VERSION"
+        
+        # Get OIDC provider URL
+        OIDC_PROVIDER=\$(aws eks describe-cluster --name ${clusterName} --region ${region} --query 'cluster.identity.oidc.issuer' --output text | sed 's|https://||')
+        echo "OIDC Provider: \$OIDC_PROVIDER"
+        
         # Check if Kubernetes resources are ready
         echo "Checking if Kubernetes resources are ready..."
         
@@ -58,7 +66,13 @@ def call(Map config = [:]) {
             # Don't exit here, continue checking other resources
         else
             echo "Checking ingress-nginx controller status..."
-            kubectl -n ingress-nginx get deployment ingress-nginx-controller -o jsonpath="{.status.readyReplicas}" || echo "ingress-nginx controller not found"
+            NGINX_READY=\$(kubectl -n ingress-nginx get deployment ingress-nginx-controller -o jsonpath="{.status.readyReplicas}" 2>/dev/null || echo "0")
+            NGINX_TOTAL=\$(kubectl -n ingress-nginx get deployment ingress-nginx-controller -o jsonpath="{.spec.replicas}" 2>/dev/null || echo "0")
+            echo "NGINX Controller: \$NGINX_READY/\$NGINX_TOTAL replicas ready"
+            
+            # Get LoadBalancer address
+            LB_ADDRESS=\$(kubectl -n ingress-nginx get service ingress-nginx-controller -o jsonpath="{.status.loadBalancer.ingress[0].hostname}" 2>/dev/null || echo "Not available")
+            echo "LoadBalancer address: \$LB_ADDRESS"
         fi
         
         # Check if cert-manager is installed
@@ -67,7 +81,19 @@ def call(Map config = [:]) {
             # Don't exit here, continue checking other resources
         else
             echo "Checking cert-manager status..."
-            kubectl -n cert-manager get deployment cert-manager -o jsonpath="{.status.readyReplicas}" || echo "cert-manager deployment not found"
+            CM_READY=\$(kubectl -n cert-manager get deployment cert-manager -o jsonpath="{.status.readyReplicas}" 2>/dev/null || echo "0")
+            CM_TOTAL=\$(kubectl -n cert-manager get deployment cert-manager -o jsonpath="{.spec.replicas}" 2>/dev/null || echo "0")
+            echo "Cert-Manager: \$CM_READY/\$CM_TOTAL replicas ready"
+            
+            # Check if ClusterIssuer exists
+            if kubectl get clusterissuer letsencrypt-prod &>/dev/null; then
+                ISSUER_STATUS=\$(kubectl get clusterissuer letsencrypt-prod -o jsonpath="{.status.conditions[0].status}" 2>/dev/null || echo "Unknown")
+                ISSUER_MESSAGE=\$(kubectl get clusterissuer letsencrypt-prod -o jsonpath="{.status.conditions[0].message}" 2>/dev/null || echo "")
+                echo "ClusterIssuer status: \$ISSUER_STATUS"
+                echo "ClusterIssuer message: \$ISSUER_MESSAGE"
+            else
+                echo "ClusterIssuer 'letsencrypt-prod' not found"
+            fi
         fi
         
         # Wait for deployment to be ready
@@ -107,6 +133,14 @@ def call(Map config = [:]) {
         # Verify all pods are running
         echo "Verifying all pods in ${namespace} namespace:"
         kubectl get pods -n ${namespace}
+        
+        # Check for any issues with nodes
+        echo "Checking for node issues:"
+        kubectl describe nodes | grep -i "pressure\\|taint" || echo "No pressure or taints found on nodes"
+        
+        # Check for any pending or failed pods across all namespaces
+        echo "Checking for problematic pods across all namespaces:"
+        kubectl get pods --all-namespaces | grep -v "Running\\|Completed" || echo "All pods are in Running or Completed state"
         
         echo "Deployment verification completed."
     """
