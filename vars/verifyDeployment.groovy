@@ -38,6 +38,15 @@ def call(Map config = [:]) {
         echo "Verifying EKS cluster is accessible..."
         retry 5 5 kubectl get nodes
         
+        # Check cluster health
+        echo "Checking EKS cluster health..."
+        CLUSTER_STATUS=\$(aws eks describe-cluster --name ${clusterName} --region ${region} --query 'cluster.status' --output text)
+        echo "Cluster status: \$CLUSTER_STATUS"
+        
+        if [ "\$CLUSTER_STATUS" != "ACTIVE" ]; then
+            echo "Warning: Cluster is not in ACTIVE state. Current state: \$CLUSTER_STATUS"
+        fi
+        
         # Wait for deployment to be ready
         echo "Waiting for ${deploymentName} deployment to be ready..."
         kubectl wait --namespace ${namespace} \\
