@@ -12,8 +12,9 @@ def call(Map config = [:]) {
         function retry {
             local max_attempts=\$1
             local delay=\$2
+            shift 2
             local attempt=1
-            local cmd="\${@:3}"
+            local cmd="\$@"
             
             until \$cmd; do
                 if (( attempt == max_attempts )); then
