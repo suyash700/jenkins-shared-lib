@@ -49,19 +49,36 @@ def call(Map config = [:]) {
             exit 1
         fi
         
-        # Check if post-deployment script has been run
-        echo "Checking if NGINX Ingress Controller is installed..."
+        # Check if Kubernetes resources are ready
+        echo "Checking if Kubernetes resources are ready..."
+        
+        # Check if ingress-nginx is installed
         if ! kubectl get namespace ingress-nginx &>/dev/null; then
-            echo "NGINX Ingress Controller namespace not found. Running post-deployment setup script..."
-            cd /Users/iemafzal/Downloads/Kind/EasyShop-Kind/terraform
-            ./post-deployment-setup.sh
+            echo "Warning: ingress-nginx namespace not found. Running Terraform apply again may be needed."
+            # Don't exit here, continue checking other resources
+        else
+            echo "Checking ingress-nginx controller status..."
+            kubectl -n ingress-nginx get deployment ingress-nginx-controller -o jsonpath="{.status.readyReplicas}" || echo "ingress-nginx controller not found"
+        fi
+        
+        # Check if cert-manager is installed
+        if ! kubectl get namespace cert-manager &>/dev/null; then
+            echo "Warning: cert-manager namespace not found. Running Terraform apply again may be needed."
+            # Don't exit here, continue checking other resources
+        else
+            echo "Checking cert-manager status..."
+            kubectl -n cert-manager get deployment cert-manager -o jsonpath="{.status.readyReplicas}" || echo "cert-manager deployment not found"
         fi
         
         # Wait for deployment to be ready
         echo "Waiting for ${deploymentName} deployment to be ready..."
-        kubectl wait --namespace ${namespace} \\
-          --for=condition=available deployment/${deploymentName} \\
-          --timeout=300s || echo "${deploymentName} deployment may not be ready yet"
+        if kubectl get deployment -n ${namespace} ${deploymentName} &>/dev/null; then
+            kubectl wait --namespace ${namespace} \\
+              --for=condition=available deployment/${deploymentName} \\
+              --timeout=300s || echo "${deploymentName} deployment may not be ready yet"
+        else
+            echo "${deploymentName} deployment not found in namespace ${namespace}"
+        fi
         
         # Get application URL
         EASYSHOP_URL="https://${deploymentName}.${domainName}"
@@ -77,11 +94,15 @@ def call(Map config = [:]) {
         
         # Get ArgoCD application status with retries
         echo "ArgoCD application status:"
-        retry 3 5 kubectl get applications -n argocd ${deploymentName} -o jsonpath="{.status.sync.status}" || echo "Unable to get ArgoCD application status"
-        
-        # Get ArgoCD application health with retries
-        echo "ArgoCD application health:"
-        retry 3 5 kubectl get applications -n argocd ${deploymentName} -o jsonpath="{.status.health.status}" || echo "Unable to get ArgoCD application health"
+        if kubectl get namespace argocd &>/dev/null; then
+            retry 3 5 kubectl get applications -n argocd ${deploymentName} -o jsonpath="{.status.sync.status}" || echo "Unable to get ArgoCD application status"
+            
+            # Get ArgoCD application health with retries
+            echo "ArgoCD application health:"
+            retry 3 5 kubectl get applications -n argocd ${deploymentName} -o jsonpath="{.status.health.status}" || echo "Unable to get ArgoCD application health"
+        else
+            echo "ArgoCD namespace not found"
+        fi
         
         # Verify all pods are running
         echo "Verifying all pods in ${namespace} namespace:"
