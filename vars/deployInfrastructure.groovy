@@ -32,102 +32,36 @@ def call(Map config = [:]) {
         # Change to terraform directory
         cd ${terraformDir}
         
-        # Explicitly set AWS credentials in the script
+        # Simplified AWS configuration
         export AWS_ACCESS_KEY_ID='${env.AWS_ACCESS_KEY_ID}'
         export AWS_SECRET_ACCESS_KEY='${env.AWS_SECRET_ACCESS_KEY}'
         export AWS_DEFAULT_REGION='${region}'
+        export TF_VAR_aws_access_key='${env.AWS_ACCESS_KEY_ID}'
+        export TF_VAR_aws_secret_key='${env.AWS_SECRET_ACCESS_KEY}'
+        export TF_VAR_region='${region}'
+
+        # Remove manual AWS config file creation
+        # Remove cluster existence check via AWS CLI
         
-        # Create AWS config files with proper permissions
-        mkdir -p ~/.aws
-        
-        cat > ~/.aws/credentials << EOF
-[default]
-aws_access_key_id = ${env.AWS_ACCESS_KEY_ID}
-aws_secret_access_key = ${env.AWS_SECRET_ACCESS_KEY}
-EOF
-        
-        cat > ~/.aws/config << EOF
-[default]
-region = ${region}
-output = json
-EOF
-        
-        chmod 600 ~/.aws/credentials
-        chmod 600 ~/.aws/config
-        
-        # Verify AWS credentials are working
-        echo "Verifying AWS credentials..."
-        aws sts get-caller-identity
-        
-        if [ \$? -ne 0 ]; then
-            echo "AWS credentials verification failed. Please check Jenkins credentials configuration."
-            exit 1
-        fi
-        
-        # Check if cluster exists
-        echo "Checking if cluster ${clusterName} exists..."
-        if aws eks describe-cluster --name ${clusterName} --region ${region} 2>/dev/null; then
-            echo "Cluster ${clusterName} already exists."
-            
+        # Use Terraform state for cluster existence check
+        if terraform state list module.eks 2>/dev/null; then
+            echo "Cluster exists in Terraform state"
             if [ "${forceRecreate}" = "true" ]; then
-                echo "Force recreate enabled. Destroying existing cluster..."
-                
-                # Configure kubectl to use the existing cluster
-                aws eks update-kubeconfig --name ${clusterName} --region ${region}
-                
-                # Delete any existing resources that might block deletion
-                echo "Cleaning up resources before destroying cluster..."
-                kubectl delete svc --all --all-namespaces || true
-                kubectl delete ingress --all --all-namespaces || true
-                kubectl delete pvc --all --all-namespaces || true
-                
-                # Initialize Terraform
-                terraform init -reconfigure
-                
-                # Create terraform.tfvars file
-                cat > terraform.tfvars << EOF
-aws_access_key = "${env.AWS_ACCESS_KEY_ID}"
-aws_secret_key = "${env.AWS_SECRET_ACCESS_KEY}"
-region = "${region}"
-EOF
-                
-                # Destroy existing infrastructure
-                terraform destroy -auto-approve
-                
-                # Wait for resources to be fully released
-                echo "Waiting for AWS resources to be fully released..."
-                sleep 60
+                echo "Destroying existing cluster..."
+                terraform destroy -target=module.eks -auto-approve
+                sleep 30
             else
-                echo "Using existing cluster. Set forceRecreate=true to recreate."
                 exit 0
             fi
-        else
-            echo "Cluster ${clusterName} does not exist. Creating new cluster..."
         fi
-        
-        # Initialize Terraform
-        echo "Initializing Terraform..."
+
+        # Initialize and apply
         terraform init -reconfigure
-        
-        # Create terraform.tfvars file
-        cat > terraform.tfvars << EOF
-aws_access_key = "${env.AWS_ACCESS_KEY_ID}"
-aws_secret_key = "${env.AWS_SECRET_ACCESS_KEY}"
-region = "${region}"
-EOF
-        
-        # Apply Terraform configuration
-        echo "Applying Terraform configuration..."
         terraform apply -auto-approve
         
-        # Configure kubectl to use the new cluster
-        echo "Configuring kubectl..."
-        aws eks update-kubeconfig --name ${clusterName} --region ${region}
-        
-        # Verify cluster is accessible
-        echo "Verifying cluster access..."
-        kubectl get nodes
-        
-        echo "Infrastructure deployment completed successfully."
+        # Configure kubectl using module outputs
+        aws eks update-kubeconfig --name ${clusterName} \
+            --region ${region} \
+            --alias automated-eks
     """
 }
