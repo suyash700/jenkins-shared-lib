@@ -92,7 +92,24 @@ region = "${region}"
 EOF
                 
                 # Destroy existing infrastructure
-                terraform destroy -auto-approve
+                def call(Map config) {
+                    sh """
+                        # Full cleanup sequence
+                        terraform destroy -auto-approve \\
+                            -target=module.eks.eks_managed_node_group \\
+                            -target=module.eks.fargate_profile \\
+                            -target=module.eks
+                        
+                        # Wait for resource deletion
+                        sleep 60  # Adjust based on cluster size
+                        
+                        # Apply fresh infrastructure
+                        terraform apply -auto-approve \\
+                            -target=module.vpc \\
+                            -target=module.eks \\
+                            -parallelism=10
+                    """
+                }
                 
                 # Wait for resources to be fully released
                 echo "Waiting for AWS resources to be fully released..."
