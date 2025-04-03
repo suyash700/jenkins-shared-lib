@@ -45,6 +45,15 @@ def call(Map config = [:]) {
         
         if [ "\$CLUSTER_STATUS" != "ACTIVE" ]; then
             echo "Warning: Cluster is not in ACTIVE state. Current state: \$CLUSTER_STATUS"
+            exit 1
+        fi
+        
+        # Check if post-deployment script has been run
+        echo "Checking if NGINX Ingress Controller is installed..."
+        if ! kubectl get namespace ingress-nginx &>/dev/null; then
+            echo "NGINX Ingress Controller namespace not found. Running post-deployment setup script..."
+            cd /Users/iemafzal/Downloads/Kind/EasyShop-Kind/terraform
+            ./post-deployment-setup.sh
         fi
         
         # Wait for deployment to be ready
