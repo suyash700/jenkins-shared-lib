@@ -2,12 +2,6 @@
 
 /**
  * Update Kubernetes manifests with new image tags
- *
- * @param imageTag The new image tag to use
- * @param manifestsPath Path to the Kubernetes manifests directory
- * @param gitCredentials The ID of the Git credentials
- * @param gitUserName Git user name for commits
- * @param gitUserEmail Git user email for commits
  */
 def call(Map config = [:]) {
     def imageTag = config.imageTag ?: error("Image tag is required")
@@ -29,13 +23,15 @@ def call(Map config = [:]) {
             git config user.email "${gitUserEmail}"
         """
         
-        // Update deployment manifests with new image tags
+        // Update deployment manifests with new image tags - using proper Linux sed syntax
         sh """
             # Update main application deployment - note the correct image name is iemafzal/easyshop-app
-            sed -i '' 's|image: iemafzal/easyshop-app:.*|image: iemafzal/easyshop-app:${imageTag}|g' ${manifestsPath}/08-easyshop-deployment.yaml
+            sed -i "s|image: iemafzal/easyshop-app:.*|image: iemafzal/easyshop-app:${imageTag}|g" ${manifestsPath}/08-easyshop-deployment.yaml
             
-            # Update migration job
-            sed -i '' 's|image: iemafzal/easyshop-migration:.*|image: iemafzal/easyshop-migration:${imageTag}|g' ${manifestsPath}/12-migration-job.yaml
+            # Update migration job if it exists
+            if [ -f "${manifestsPath}/12-migration-job.yaml" ]; then
+                sed -i "s|image: iemafzal/easyshop-migration:.*|image: iemafzal/easyshop-migration:${imageTag}|g" ${manifestsPath}/12-migration-job.yaml
+            fi
             
             # Check for changes
             if git diff --quiet; then
