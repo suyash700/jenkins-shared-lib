@@ -26,31 +26,55 @@ def call(Map config = [:]) {
     
     // Install Trivy if not found and installation is requested
     if (!trivyInstalled && installTrivy) {
-        echo "Trivy not found. Attempting to install..."
+        echo "Trivy not found. Attempting to install without sudo..."
         
         try {
+            // Create a local bin directory in workspace
+            sh "mkdir -p \${WORKSPACE}/bin"
+            
+            // Add the local bin to PATH
+            def localBinPath = "\${WORKSPACE}/bin"
+            env.PATH = "${localBinPath}:${env.PATH}"
+            
+            // Download and install Trivy directly to the local bin
             sh """
-                # For Debian/Ubuntu
-                if command -v apt-get &> /dev/null; then
-                    sudo apt-get update
-                    sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-                    wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-                    echo deb https://aquasecurity.github.io/trivy-repo/deb \$(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
-                    sudo apt-get update
-                    sudo apt-get install -y trivy
-                # For macOS
-                elif command -v brew &> /dev/null; then
-                    brew install aquasecurity/trivy/trivy
-                # For Amazon Linux, CentOS, etc.
-                elif command -v yum &> /dev/null; then
-                    sudo yum install -y wget
-                    sudo rpm -ivh https://github.com/aquasecurity/trivy/releases/download/v0.38.3/trivy_0.38.3_Linux-64bit.rpm
+                # Detect OS and architecture
+                OS=\$(uname -s | tr '[:upper:]' '[:lower:]')
+                ARCH=\$(uname -m)
+                
+                if [ "\$ARCH" = "x86_64" ]; then
+                    ARCH="64bit"
+                elif [ "\$ARCH" = "aarch64" ] || [ "\$ARCH" = "arm64" ]; then
+                    ARCH="ARM64"
                 else
-                    echo "Unsupported OS for automatic Trivy installation"
+                    echo "Unsupported architecture: \$ARCH"
                     exit 1
                 fi
+                
+                # Set Trivy version
+                TRIVY_VERSION="0.38.3"
+                
+                if [ "\$OS" = "linux" ]; then
+                    TRIVY_FILENAME="trivy_\${TRIVY_VERSION}_Linux-\${ARCH}.tar.gz"
+                elif [ "\$OS" = "darwin" ]; then
+                    TRIVY_FILENAME="trivy_\${TRIVY_VERSION}_macOS-\${ARCH}.tar.gz"
+                else
+                    echo "Unsupported OS: \$OS"
+                    exit 1
+                fi
+                
+                # Download Trivy
+                curl -sfL -o /tmp/trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v\${TRIVY_VERSION}/\${TRIVY_FILENAME}
+                
+                # Extract Trivy to local bin
+                tar -xzf /tmp/trivy.tar.gz -C /tmp
+                mv /tmp/trivy ${localBinPath}/
+                chmod +x ${localBinPath}/trivy
+                
+                # Verify installation
+                ${localBinPath}/trivy --version
             """
-            echo "Trivy installed successfully"
+            echo "Trivy installed successfully to ${localBinPath}"
         } catch (Exception e) {
             echo "Failed to install Trivy: ${e.message}"
             error "Trivy installation failed. Please install Trivy manually on the Jenkins server."

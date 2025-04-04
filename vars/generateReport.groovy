@@ -4,7 +4,7 @@
  * Generate build report
  *
  * @param projectName The name of the project
- * @param imageName The name of the Docker image
+ * @param imageName The name of the Docker image(s)
  * @param imageTag The tag for the Docker image
  */
 def call(Map config = [:]) {
@@ -23,8 +23,10 @@ def call(Map config = [:]) {
         echo "Generated: \$(date)" >> reports/build-report.txt
         echo "" >> reports/build-report.txt
         echo "Build Number: ${env.BUILD_NUMBER}" >> reports/build-report.txt
-        echo "Docker Image: ${imageName}:${imageTag}" >> reports/build-report.txt
+        echo "Docker Images: ${imageName}" >> reports/build-report.txt
+        echo "Image Tag: ${imageTag}" >> reports/build-report.txt
         echo "Build Status: ${currentBuild.result ?: 'SUCCESS'}" >> reports/build-report.txt
+        echo "Build URL: ${env.BUILD_URL}" >> reports/build-report.txt
     """
     
     // Archive the report
