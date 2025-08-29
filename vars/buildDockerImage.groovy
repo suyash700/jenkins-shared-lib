@@ -1,14 +1,16 @@
 def call(Map config = [:]) {
-    def imageName = config.imageName ?: error("Image name is required")
+    def imageName = config.imageName ?: 'default-image'
     def imageTag = config.imageTag ?: 'latest'
     def dockerfile = config.dockerfile ?: 'Dockerfile'
     def context = config.context ?: '.'
     
     echo "Building Docker image: ${imageName}:${imageTag} using ${dockerfile}"
     
-    // Run docker build with detailed logs   
-        sh docker build  -t ${imageName}:${imageTag} -t ${imageName}:latest -f ${dockerfile} ${context}
-       
+    // Run docker build with detailed logs
+    sh """
+        set -x
+        docker build -t ${imageName}:${imageTag} -t ${imageName}:latest -f ${dockerfile} ${context}
+    """
     
-    echo "Docker build completed successfully for ${imageName}:${imageTag}"
+    echo "Docker build completed for ${imageName}:${imageTag}"
 }
